@@ -37,10 +37,13 @@ class Bound:
         self.top_seg = self._get_topseg()
         self.bot_2pts = self._get_bot2pt()
         self.normal = self._get_orient(mas)
+        self.vec = rs.VectorRotate(self.normal, -90, [0,0,1])
+        self.ang = rs.VectorAngle(self.vec, [1, 0, 0]) if rs.VectorCrossProduct(self.vec, [1, 0, 0])[2] < 0 else -rs.VectorAngle(self.vec, [1,0,0])
         self.pointer = rs.VectorUnitize(rs.VectorCreate(rs.CurveEndPoint(self.top_seg), rs.CurveStartPoint(self.top_seg)))
         self.clm_pts = []
         self.inter_height = []
         self.clm_ctl = False # if it's controlled by column grid
+        self.all_blk_ins = []
 
     def _get_orient(self, massings):
         """ get the orient of bound, normal always pointing in"""
@@ -112,7 +115,7 @@ class Bound:
             _sta = rs.CurveStartPoint(self.top_seg)
             _end = rs.CurveEndPoint(self.top_seg)
             _sta[2], _end[2] = 0, 0
-            self.clm_insrt = list(pts_l)
+            self.clm_insrt_pt = list(pts_l)
 
             pts_r.insert(0, _sta)
             pts_l.append(_end)
@@ -125,18 +128,29 @@ class Bound:
             #     if rs.VectorAngle(_vec_tseg, _vec_pts) < 90:
             #         seg_list_c.append(i)
             # print(seg_list_c)
-            self.segs = [Seg(i[0], i[1]) for i in seg_list if rs.Distance(i[0], i[1]) > 0.1]
+            self.segs = [Seg(i[0], i[1], self) for i in seg_list if rs.Distance(i[0], i[1]) > 0.1]
             self.segs[0].type, self.segs[-1].type = 1, 2
 
         else:
-            self.segs = [Seg(rs.CurveStartPoint(self.top_seg), rs.CurveEndPoint(self.top_seg), -1)]
+            self.segs = [Seg(rs.CurveStartPoint(self.top_seg), rs.CurveEndPoint(self.top_seg), self, -1)]
 
     def plant_insrt(self):
         """ after defining segments, this method populate points on the segments """
         for i in self.segs:
             i.cal_width()
             i.plant_pts()
-            
+            i.convert_insrt()
+        self._convert_insrt()
+
+    def assign_to_z(self):
+        r_interval = []
+        for x in reversed(range(len(self.inter_height[1:]))):
+            r_interval.append(self.inter_height[x+1] - self.inter_height[x])
+        for x, i in enumerate(self.inter_height[1::-1]):
+            for j in self.all_blk_ins:
+                _ = rs.ScaleObject(j.blk_ins, j.pos, [1,1,r_interval[x]/j.blk.height], True)
+                rs.MoveObject(_, [0,0,i])
+
 
 
     def add_pts(self):
@@ -147,15 +161,22 @@ class Bound:
                 rs.AddPoint(new_pt)
         [rs.AddPoint(i) for i in self.clm_pts]
 
+    def _convert_insrt(self):
+        self.clm_insrt = []
+        for i in self.clm_insrt_pt:
+            self.clm_insrt.append(Insrt(i, self.ang, blk_pool[clm_idx], 1, self))
+
 class Seg:
 
-    def __init__(self, sta, end, type = 0):
+    def __init__(self, sta, end, bound, type = 0):
         self.sta = sta
         self.end = end
         self.vec = rs.VectorUnitize(rs.VectorCreate(end, sta))
         self.type = type # 0 on middle 1 on left 2 on right -1 whole
         self.dist = rs.Distance(self.sta, self.end)
+        self.insrt_pt = []
         self.insrt = []
+        self.bound = bound
 
     def cal_width(self):
         ctn_width = blk_pool[ctn_idx].width
@@ -168,36 +189,65 @@ class Seg:
                     self.margin_width = mgn_width + (clean_dist % ctn_width) / 2
             else:
                 self.times, margin_width = divmod(self.dist, ctn_width)
-                self.margin_width = margin_width / 2 if abs(margin_width) > 0.01 else 0
+                if abs(margin_width) < 0.05:
+                    self.margin_width = ctn_width
+                    self.times -= 2 if self.times >= 2 else 0
+                else:
+                    self.margin_width = margin_width / 2
 
         elif self.type == 1 or self.type == 2:
             self.times, margin_width = divmod(self.dist, ctn_width)
-            self.margin_width = margin_width if abs(margin_width) > 0.01 else 0
+            if abs(margin_width) < 0.05:
+                    self.margin_width = ctn_width
+                    self.times -= 1 if self.times >= 1 else 0
+            else:
+                self.margin_width = margin_width
 
     def plant_pts(self):
         ctn_width = blk_pool[ctn_idx].width
-        dist_list = [ctn_width] * int(self.times + 1)
-        _ = self.sta
+        self.dist_list = [ctn_width] * int(self.times)
+
         if self.type == 0 or self.type == -1:
-            if self.margin_width: dist_list.insert(0, self.margin_width)
-            for i in dist_list:
-                self.insrt.append(_)
-                _ = rs.PointAdd(_, rs.VectorScale(self.vec, i))
+            self.dist_list.insert(0, self.margin_width)
+            self.dist_list.append(self.margin_width)
+            self._hit_pts()     
         elif self.type == 1:
-            if self.margin_width: dist_list.insert(0, self.margin_width)
-            dist_list.pop()
-            for i in dist_list:
-                self.insrt.append(_)
-                _ = rs.PointAdd(_, rs.VectorScale(self.vec, i))
+            self.dist_list.insert(0, self.margin_width)
+            self._hit_pts()
         elif self.type == 2:
-            for i in dist_list:
-                self.insrt.append(_)
-                _ = rs.PointAdd(_, rs.VectorScale(self.vec, i))
-        rs.AddPoints(self.insrt)
-        print(self.dist)
-        print(self.margin_width)
+            self.dist_list.append(self.margin_width)
+            self._hit_pts()
+
+    def _hit_pts(self):
+        _ = self.sta
+        for i in self.dist_list:
+            self.insrt_pt.append(_)
+            _ = rs.PointAdd(_, rs.VectorScale(self.vec, i))
+
+    def convert_insrt(self):
+        for x, i in enumerate(self.dist_list):
+            if margin and (x == 0 or x == len(self.dist_list) - 1):
+                self.insrt.append(Insrt(self.insrt_pt[x], self.bound.ang, blk_pool[mgn_idx], i / blk_pool[mgn_idx].width, self.bound))
+            else:
+                self.insrt.append(Insrt(self.insrt_pt[x], self.bound.ang, blk_pool[ctn_idx], i / blk_pool[mgn_idx].width, self.bound))
 
 
+
+
+class Insrt:
+
+    def __init__(self, pos, ang, blk, scale_x, bound):
+        self.pos = pos
+        self.ang = ang
+        self.blk = blk
+        self.scale_x = scale_x
+        self.bound = bound
+        self.scale_z = 1
+        self.blk_ins = self._insrt_blk()
+        self.bound.all_blk_ins.append(self)
+
+    def _insrt_blk(self):
+        return rs.InsertBlock(self.blk.name, self.pos, [self.scale_x, 1, 1], self.ang)
 
 class Column:
 
@@ -244,6 +294,8 @@ attractors = rs.GetObjects("get columns and massings", 8|16)
 bound = rs.GetObject("get bound rectangle", 4)
 blk_pool = [Blk(i) for i in blk_pool]
 
+rs.EnableRedraw(False)
+
 mas, clm = separate_input(attractors)
 mas_cls = Massings(mas)
 clm_cls = [Column(i) for i in clm]
@@ -253,6 +305,5 @@ bound_cls.column_inter(clm_cls)
 bound_cls.massing_inter(mas_cls)
 bound_cls.define_segs()
 bound_cls.plant_insrt()
-
-rs.AddTextDot("0", rs.CurvePoints(bound_cls.top_seg)[0])
-rs.AddTextDot("1", rs.CurvePoints(bound_cls.top_seg)[1])
+bound_cls.assign_to_z()
+print(bound_cls.inter_height)
