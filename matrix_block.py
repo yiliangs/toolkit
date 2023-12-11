@@ -1,18 +1,18 @@
 import rhinoscriptsyntax as rs
 import random as r
 
-blk_pool = ["Block 01", "Block 02", "Block 03"]
-blk_pool = ["Block 01", "Block 02", "Block 03"]
+blk_pool = ["Block 01", "Block 02", "Block 03", "Block 04", "Block 05", "Block 06"]
+ctn_idx = 0
 clm_idx = 1
 mgn_idx = 2
-ctn_idx = 0
-module = 1.5
-margin = False
+apx_idx = 3
+bly_idx = 4
+clma_idx = 5
 
-mgn_idx = 2
-ctn_idx = 0
 module = 1.5
 margin = False
+appendix = True
+balcony = True
 
 # pattern = [
 #     [0,1,1],
@@ -58,19 +58,14 @@ class Bound:
         _top_end = rs.CurveEndPoint(self.top_seg)
         _top_vec = rs.VectorCreate(_top_end, _top_sta)
         _vec_l = rs.VectorScale(rs.VectorUnitize(rs.VectorRotate(_top_vec, 90, [0, 0, 1])), 0.1)
+        _height = self.bb[6][2] - self.bb[0][2]
         sta_l = rs.PointAdd(_top_mid, _vec_l)
-        _height = self.bb[6][2] - self.bb[0][2]
-        _height = self.bb[6][2] - self.bb[0][2]
         end_l = rs.PointAdd(sta_l, [0,0,-_height])
         ln_l = rs.ScaleObject(rs.AddLine(sta_l, end_l), self.cen, [1,1,0.8])
         for i in massings:
             if rs.CurveBrepIntersect(ln_l, i):
                 rs.DeleteObject(ln_l)
                 return rs.CurveNormal(self.id)
-        rs.ReverseCurve(self.id)
-        rs.ReverseCurve(self.top_seg)
-        rs.DeleteObject(ln_l)
-        return rs.CurveNormal(self.id)
         rs.ReverseCurve(self.id)
         rs.ReverseCurve(self.top_seg)
         rs.DeleteObject(ln_l)
@@ -126,13 +121,6 @@ class Bound:
             _sta = rs.CurveStartPoint(self.top_seg)
             _end = rs.CurveEndPoint(self.top_seg)
             _sta[2], _end[2] = 0, 0
-            self.clm_insrt = list(pts_l)
-
-            pts_r.insert(0, _sta)
-            pts_l.append(_end)
-            _sta = rs.CurveStartPoint(self.top_seg)
-            _end = rs.CurveEndPoint(self.top_seg)
-            _sta[2], _end[2] = 0, 0
             self.clm_insrt_pt = list(pts_l)
 
             pts_r.insert(0, _sta)
@@ -164,12 +152,31 @@ class Bound:
         r_interval = []
         for x in reversed(range(len(self.inter_height[1:]))):
             r_interval.append(self.inter_height[x+1] - self.inter_height[x])
-        for x, i in enumerate(self.inter_height[1::-1]):
+        for x, i in enumerate(self.inter_height[:0:-1]):
             for j in self.all_blk_ins:
                 _ = rs.ScaleObject(j.blk_ins, j.pos, [1,1,r_interval[x]/j.blk.height], True)
                 rs.MoveObject(_, [0,0,i])
+        self.balcony_add()
+        self.appendix_add()
+    
+    def balcony_add(self):
+        if balcony:
+            for i in self.all_blk_ins:
+                _pt = rs.PointAdd(i.pos, [0,0,self.inter_height[-1]])
+                _scale = i.scale_x
+                rs.InsertBlock(blk_pool[bly_idx].name, _pt, [_scale,1,1], i.ang)
 
 
+    def appendix_add(self):
+        if appendix:
+            for i in self.all_blk_ins:
+                _pt = rs.PointAdd(i.pos, [0,0,self.inter_height[0]])
+                _scale = i.scale_x
+                if i.blk.name != blk_pool[clm_idx].name:
+                    rs.InsertBlock(blk_pool[apx_idx].name, _pt, [_scale,1,1], i.ang)
+                else:
+                    rs.InsertBlock(blk_pool[clma_idx].name, _pt, [_scale,1,1], i.ang)
+                    print(1)
 
     def add_pts(self):
         """ just for testing the functionality of some methods """
@@ -192,50 +199,6 @@ class Seg:
         self.vec = rs.VectorUnitize(rs.VectorCreate(end, sta))
         self.vec = rs.VectorUnitize(rs.VectorCreate(end, sta))
         self.type = type # 0 on middle 1 on left 2 on right -1 whole
-        self.dist = rs.Distance(self.sta, self.end)
-        self.insrt = []
-
-    def cal_width(self):
-        ctn_width = blk_pool[ctn_idx].width
-        if self.type == 0 or self.type == -1:
-            if margin:
-                mgn_width = blk_pool[mgn_idx].width
-                clean_dist = self.dist - 2 * mgn_width
-                self.times = clean_dist // ctn_width
-                if abs(clean_dist % ctn_width) > 0.01:
-                    self.margin_width = mgn_width + (clean_dist % ctn_width) / 2
-            else:
-                self.times, margin_width = divmod(self.dist, ctn_width)
-                self.margin_width = margin_width / 2 if abs(margin_width) > 0.01 else 0
-
-        elif self.type == 1 or self.type == 2:
-            self.times, margin_width = divmod(self.dist, ctn_width)
-            self.margin_width = margin_width if abs(margin_width) > 0.01 else 0
-
-    def plant_pts(self):
-        ctn_width = blk_pool[ctn_idx].width
-        dist_list = [ctn_width] * int(self.times + 1)
-        _ = self.sta
-        if self.type == 0 or self.type == -1:
-            if self.margin_width: dist_list.insert(0, self.margin_width)
-            for i in dist_list:
-                self.insrt.append(_)
-                _ = rs.PointAdd(_, rs.VectorScale(self.vec, i))
-        elif self.type == 1:
-            if self.margin_width: dist_list.insert(0, self.margin_width)
-            dist_list.pop()
-            for i in dist_list:
-                self.insrt.append(_)
-                _ = rs.PointAdd(_, rs.VectorScale(self.vec, i))
-        elif self.type == 2:
-            for i in dist_list:
-                self.insrt.append(_)
-                _ = rs.PointAdd(_, rs.VectorScale(self.vec, i))
-        rs.AddPoints(self.insrt)
-        print(self.dist)
-        print(self.margin_width)
-
-
         self.dist = rs.Distance(self.sta, self.end)
         self.insrt_pt = []
         self.insrt = []
@@ -292,7 +255,7 @@ class Seg:
             if margin and (x == 0 or x == len(self.dist_list) - 1):
                 self.insrt.append(Insrt(self.insrt_pt[x], self.bound.ang, blk_pool[mgn_idx], i / blk_pool[mgn_idx].width, self.bound))
             else:
-                self.insrt.append(Insrt(self.insrt_pt[x], self.bound.ang, blk_pool[ctn_idx], i / blk_pool[mgn_idx].width, self.bound))
+                self.insrt.append(Insrt(self.insrt_pt[x], self.bound.ang, blk_pool[ctn_idx], i / blk_pool[ctn_idx].width, self.bound))
 
 
 
@@ -310,7 +273,11 @@ class Insrt:
         self.bound.all_blk_ins.append(self)
 
     def _insrt_blk(self):
-        return rs.InsertBlock(self.blk.name, self.pos, [self.scale_x, 1, 1], self.ang)
+        _b = rs.InsertBlock(self.blk.name, self.pos, [self.scale_x, 1, 1], self.ang)
+        self.bb = rs.BoundingBox(_b)
+        self.bot_pos = [self.pos[0], self.pos[1], self.bb[0][2]]
+        self.height = self.blk.height
+        return _b
 
 class Column:
 
@@ -369,4 +336,3 @@ bound_cls.massing_inter(mas_cls)
 bound_cls.define_segs()
 bound_cls.plant_insrt()
 bound_cls.assign_to_z()
-print(bound_cls.inter_height)
