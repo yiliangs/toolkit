@@ -2,11 +2,13 @@ import rhinoscriptsyntax as rs
 import random
 
 max_k = 8
+module = 1.5
 
 class Footprint:
 
     def __init__(self, id):
         self.id = id
+        self.domain = rs.CurveDomain(id)
         self._simplify_curve()
         self._orient_calibration()
         self._seam_calibration()
@@ -44,19 +46,19 @@ class Footprint:
         except:
             raise KeyError("The self.seg_cls doesn't exist!")
 
-    def leveling_clustering(self):
+    def leveling_clustering_Obsolete(self):
         self.con_locs = [i.ml_loc for i in self.seg_cls]
         self.v_clusters = leveling_2d(self.con_locs)
         self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
         self._labeling_clusters()
 
-    def dbscan_clustering(self):
+    def dbscan_clustering_Obsolete(self):
         self.con_locs = [i.ml_loc for i in self.seg_cls]
         self.v_clusters = dbscan(self.con_locs, 0.02, 1)
         self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
         self._labeling_clusters()
 
-    def kmeans_clustering(self):
+    def kmeans_clustering_Obsolete(self):
         self.con_locs = [i.ml_loc for i in self.seg_cls]
         k, self.v_clusters = k_means(self.con_locs, max_k)
         self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
@@ -71,20 +73,29 @@ class Footprint:
         for i in self.seg_cls:
             rs.AddTextDot("Type {}".format(i.label), i.mid)
             # rs.AddLine([0,0,0], i.ml_loc+[0])
+    
+    def deploy_facade(self):
+        for i in self.seg_cls:
+            i.facade_populate()
 
 class Segment:
     def __init__(self, id, fpt):
         self.id = id
+        self.domain = rs.CurveDomain(id)
         self.fpt = fpt
         self.sta = rs.CurveStartPoint(id)
         self.end = rs.CurveEndPoint(id)
         self.mid = rs.CurveMidPoint(id)
         self.length = rs.CurveLength(id)
         self.vec = rs.VectorCreate(self.end, self.sta)
+        self.ang = rs.VectorAngle(self.vec, [1, 0, 0]) if rs.VectorCrossProduct(self.vec, [1, 0, 0])[2] < 0 else -rs.VectorAngle(self.vec, [1,0,0])
         self.adjacency = []
         self.adjacency_state = []
         self.adjacency_score = -1
         self.length_score = -1
+        self.blk_type = None
+
+        self.insrt_pts, self.end_pt = self._insrt_find()
 
     def activate(self):
         self.adjacency_stating()
@@ -130,12 +141,53 @@ class Segment:
     def vector_compare(self, other):
         return ((self.ml_loc[0] - other.ml_loc[0])**2 + (self.ml_loc[1] - other.ml_loc[1])**2)**0.5
 
+    def _insrt_find(self):
+        """
+        Find insertion points for middle portion and the end one.
+        """
+        self.pt_count, self.remnent = divmod(self.length, module)
+        _uni_vec = rs.VectorUnitize(self.vec)
+        _vec = rs.VectorScale(_uni_vec, self.remnent/2)
+        _first_pt = rs.PointAdd(self.sta, _vec)
+        _insrt_pts = [rs.PointAdd(_first_pt, rs.VectorScale(_uni_vec, x*module)) for x in range(int(self.pt_count) + 1)]
+        _insrt_pts, _end_pt = _insrt_pts[:-1], _insrt_pts[-1]
+        return _insrt_pts, _end_pt
+    
+    def facade_populate(self):
+        """
+        populate different facade types based on the type property.
+        """
+        g = rs.AddGroup()
+        _blks_mids = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1), self.ang) for x in range(len(self.insrt_pts))]
+        rs.AddObjectsToGroup(_blks_mids, g)
+        if self.remnent > 0.05:
+            _blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.ang)
+            _blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.ang)
+            rs.AddObjectsToGroup([_blks_sta, _blks_end], g)
 
 # -------------------------------- GENERAL FUNCTIONS --------------------------------
 
 def unitize_mapping(input_value, min_value, max_value):
     scaled_value = (input_value - min_value) / (max_value - min_value)
     return scaled_value
+
+def separate_input(input_params):
+    for x, i in enumerate(input_params):
+        if rs.IsCurve(i):
+            crv = input_params.pop(x)
+    return input_params, crv
+
+def blks_smpl_match(blks, smpl_cls):
+    for i in blks:
+        bbb = rs.BoundingBox(i)
+        blk_cen = [(bbb[6][0] + bbb[0][0])/2, (bbb[6][1] + bbb[0][1])/2, (bbb[6][2] + bbb[0][2])/2]
+        _t = rs.CurveClosestPoint(smpl_cls.id, blk_cen)
+        for j in smpl_cls.seg_cls:
+            if not j.blk_type and j.domain[0] < _t < j.domain[1]:
+                j.blk_type = rs.BlockInstanceName(i)
+
+
+# dbscan
 
 def calculate_distance(point1, point2):
     return ((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2) ** 0.5
@@ -223,7 +275,6 @@ def k_means(data, k, max_iterations=1000, tolerance=1e-2000):
 
     return centroids, clusters
 
-# dbscan
 def find_parent(data, f_data, tree):
     f_data = list(f_data)
     f_tree = list(tree)
@@ -252,21 +303,43 @@ def leveling_2d(dataset, tol = 0.1):
 
 # -------------------------------- MAIN --------------------------------
 
-smpl = rs.GetObject('sample', 4)
+
+# define classes
+smpl_set = rs.GetObjects('blocks/sample', 4096|4)
 ipts = rs.GetObjects('input', 4)
 
+rs.EnableRedraw(False)
+
+# separate blocks and sample curves
+blks, smpl = separate_input(smpl_set)
+
+# define class
 smpl_cls = Footprint(smpl)
 ipt_clss = [Footprint(i) for i in ipts]
 
-# smpl_cls.dbscan_clustering()
-smpl_cls.kmeans_clustering()
-smpl_cls.display_labels()
+# match blocks and curve segs
+blks_smpl_match(blks, smpl_cls)
 
+# match types
 for ipt_cls in ipt_clss:
     for i in ipt_cls.seg_cls:
         _ = [i.vector_compare(j) for j in smpl_cls.seg_cls]
         dic = dict(zip(_, smpl_cls.seg_cls))
-        i.label = dic[min(_)].label
+        i.blk_type = dic[min(_)].blk_type
 
 
-[ipt_cls.display_labels() for ipt_cls in ipt_clss]
+[ipt_cls.deploy_facade() for ipt_cls in ipt_clss]
+
+
+# smpl_cls.dbscan_clustering()
+# smpl_cls.kmeans_clustering()
+# smpl_cls.display_labels()
+
+
+
+# [ipt_cls.display_labels() for ipt_cls in ipt_clss]
+
+# -------------------------------- GC --------------------------------
+
+rs.DeleteObjects(smpl_cls.segs)
+[rs.DeleteObjects(i.segs) for i in ipt_clss]
