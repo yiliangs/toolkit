@@ -1,6 +1,11 @@
 import rhinoscriptsyntax as rs
 import random
 
+"""
+AI Block (WIP)
+v 0.1.1-alpha
+"""
+
 max_k = 8
 module = 1.5
 
@@ -85,7 +90,11 @@ class Segment:
         self.mid = rs.CurveMidPoint(id)
         self.length = rs.CurveLength(id)
         self.vec = rs.VectorCreate(self.end, self.sta)
-        self.ang = rs.VectorAngle(self.vec, [1, 0, 0]) if rs.VectorCrossProduct(self.vec, [1, 0, 0])[2] < 0 else -rs.VectorAngle(self.vec, [1,0,0])
+        self.is_crv = not rs.IsLine(self.id)
+        self.vec_sta = rs.CurveTangent(id, self.domain[0])
+        self.vec_end = rs.CurveTangent(id, self.domain[1])
+        self.vec_span = rs.VectorAngle(self.vec_sta, self.vec_end)
+        self.orient = self._get_orient(self.vec)
         self.adjacency = []
         self.adjacency_state = []
         self.adjacency_score = -1
@@ -93,6 +102,7 @@ class Segment:
         self.blk_type = None
 
         self.insrt_pts, self.end_pt = self._insrt_find()
+        self.orients = [self._get_orient(i) for i in self.vecs]
 
     def activate(self):
         self.adjacency_stating()
@@ -159,6 +169,9 @@ class Segment:
     def display_score(self):
         rs.AddTextDot("{}\n{}\n{}\n{}".format(self.length_score, self.adjacency_score, self.vector_score, self.location_score), self.mid)
 
+    def _get_orient(self, vec):
+        return rs.VectorAngle(vec, [1, 0, 0]) if rs.VectorCrossProduct(vec, [1, 0, 0])[2] < 0 else -rs.VectorAngle(vec, [1,0,0])
+
     def _insrt_find(self):
         """Find insertion points for middle portion and the end one."""
         self.pt_count, self.remnent = divmod(round(self.length, 1) , module)
@@ -166,18 +179,20 @@ class Segment:
         _vec = rs.VectorScale(_uni_vec, self.remnent/2)
         _first_pt = rs.PointAdd(self.sta, _vec)
         _insrt_pts = [rs.PointAdd(_first_pt, rs.VectorScale(_uni_vec, x*module)) for x in range(int(self.pt_count) + 1)]
+        self.vecs = [rs.CurveTangent(self.id, rs.CurveClosestPoint(self.id, i)) for i in _insrt_pts]
         _insrt_pts, _end_pt = _insrt_pts[:-1], _insrt_pts[-1]
         return _insrt_pts, _end_pt
     
     def facade_populate(self):
         """populate different facade types based on the type property."""
         g = rs.AddGroup()
-        _blks_mids = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1), self.ang) for x in range(len(self.insrt_pts))]
+        _blks_mids = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1), self.orients[x]) for x in range(len(self.insrt_pts))]
         rs.AddObjectsToGroup(_blks_mids, g)
         if self.remnent > 0.1:
-            _blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.ang)
-            _blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.ang)
+            _blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.orient)
+            _blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.orient)
             rs.AddObjectsToGroup([_blks_sta, _blks_end], g)
+
 
 # -------------------------------- GENERAL FUNCTIONS --------------------------------
 
