@@ -4,7 +4,7 @@ module = 1.5
 fp_thickness = 0.5
 ftf_height = 4
 
-all_blks = [["Block 01", "Block 02", "Block 01"], "Block 02", "Block 03"]
+all_blks = ["Block 01","Block 02", "Block 03"]
 
 
 class Foorprint:
@@ -118,49 +118,29 @@ class Seg:
         """
         populate different facade types based on the type property.
         """
-        if self.type == 0: 
-            _blks = blks[0]
-            if self.is_odd:
-                _blks = [blks[0][1], blks[0][0], blks[0][2]]
-            _blks_mids = [rs.InsertBlock(_blks[:2][int(x%2)], self.insrt_pts[x], (1,1,1), self.ang) for x in range(len(self.insrt_pts))]
-            if self.remnent > 0.05:
-                _blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(_blks[2], self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.ang)
-                _blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(_blks[2], self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.ang)
-        elif self.type == 1:
-            _blk = blks[1]
-            _blks_mids = [rs.InsertBlock(_blk, self.insrt_pts[x], (1,1,1), self.ang) for x in range(len(self.insrt_pts))]
-            if self.remnent > 0.05:
-                _blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(_blk, self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.ang)
-                _blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(_blk, self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.ang)
-        elif self.type == 4:
-            rs.ExtrudeCurveStraight(self.id, [0,0,0], [0,0,-ftf_height])
-        
-        if self.upper_type == 1:
-            _sup_blk = blks[2]
-            _blks_mids = [rs.InsertBlock(_sup_blk, self.insrt_pts[x], (1,1,1), self.ang) for x in range(len(self.insrt_pts))]
-            if self.remnent > 0.05:
-                _sup_blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(_sup_blk, self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.ang)
-                _sup_blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(_sup_blk, self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.ang)
+        g = rs.AddGroup()
+        _blk = blks[0]
+        _blks_mids = [rs.InsertBlock(_blk, self.insrt_pts[x], (1,1,1), self.ang) for x in range(len(self.insrt_pts))]
+        rs.AddObjectsToGroup(_blks_mids, g)
+        if self.remnent > 0.1:
+            _blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(_blk, self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.ang)
+            _blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(_blk, self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.ang)
+            rs.AddObjectsToGroup([_blks_sta, _blks_end], g)
 
 
 
 
 # get and sort breps
-breps = rs.GetObjects("select massing boxes", 16)
-breps.sort(key = lambda i:rs.SurfaceAreaCentroid(i)[0][2])
+crvs = rs.GetObjects("select outlines", 4)
 
 rs.EnableRedraw(False)
 
 # initialize classes
 is_odd = True
 fpt_cls = []
-for i in breps:
+for i in crvs:
     is_odd = not is_odd
-    _srfs = rs.ExplodePolysurfaces(i)
-    _srfs.sort(key = lambda j:rs.SurfaceAreaCentroid(j)[0][2])
-    fpt = rs.DuplicateSurfaceBorder(_srfs[-1])
-    fpt_cls.append(Foorprint(fpt, is_odd))
-    rs.DeleteObjects(_srfs)
+    fpt_cls.append(Foorprint(i, is_odd))
 
 for i in fpt_cls:
     i.seg_catagory()
@@ -177,8 +157,6 @@ for x, i in enumerate(fpt_cls):
     rs.DeleteObject(i.bb_rect)
 
 # recycle space
-rs.DeleteObjects(breps)
-
 
                 
             
