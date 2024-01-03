@@ -12,8 +12,8 @@ class Footprint:
         self.domain = rs.CurveDomain(id)
         self._simplify_curve()
         self._seam_calibration()
-        self.segs = rs.ExplodeCurves(id)
         self._orient_calibration()
+        self.segs = rs.ExplodeCurves(id)
         self.length_list = [rs.CurveLength(i) for i in self.segs]
         self.length_inteval = [min(self.length_list), max(self.length_list)]
         self.seg_cls = [Segment(i, self) for i in self.segs]
@@ -28,9 +28,7 @@ class Footprint:
         cco = rs.ClosedCurveOrientation(self.id)
         if cco < 0:
             rs.ReverseCurve(self.id)
-            [rs.ReverseCurve(i) for i in self.segs]
-            self.segs = self.segs[::-1]
-    
+
     def _seam_calibration(self):
         """In here the curve realigns the seam for itself"""
         t = rs.CurveClosestPoint(self.id, [-float("inf"), -float("inf"), 0])
@@ -118,9 +116,9 @@ class Segment:
         if self.adjacency_state == [-1,-1]:
             self.adjacency_score = 0
         elif self.adjacency_state == [-1,1]:
-            self.adjacency_score = 0.33
+            self.adjacency_score = 0.5
         elif self.adjacency_state == [1,-1]:
-            self.adjacency_score = 0.66
+            self.adjacency_score = 0.5
         elif self.adjacency_state == [1,1]:
             self.adjacency_score = 1
         else:
@@ -128,7 +126,7 @@ class Segment:
     
     def vector_scoring(self):
         """Score different vectors for the segment."""
-        ang = rs.VectorAngle([0,1,0], self.vec)
+        ang = abs(rs.VectorAngle([0,1,0], self.vec) - 90)
         self.vector_score = unitize_mapping(ang, 0, 180)
 
     def location_scoring(self):
@@ -142,21 +140,28 @@ class Segment:
         self.length_score = unitize_mapping(self.length, self.fpt.length_inteval[0], self.fpt.length_inteval[1])
 
     def vectorize(self):
-        """put in feature matrix with weigh"""          # --------------- weigh is changing here ---------------
-        self.ml_loc = [self.length_score * 0.5, self.adjacency_score * 2, self.vector_score * 1.25, self.location_score * 0.75]
-        # self.ml_loc = [self.length_score * 1, self.adjacency_score * 1, self.vector_score * 1, self.location_score * 1]
+        """put in feature matrix with weigh"""          # --------------- weigh ---------------
+        self.ml_loc = [self.length_score * 0.5, self.adjacency_score * 2, self.vector_score * 1.25, self.location_score * 0.5]
     
-    def vector_compare(self, other):
-        """compare the euclidian distance of two vectors"""
-        score = 0
+    def vector_compare(self, other, typed = 0):
+        """compare the distance of two vectors"""
+        distance = 0
+        p = 3
         for x in range(len(self.ml_loc)):
-            score += (self.ml_loc[x] - other.ml_loc[x])**2
-        score **= 0.5
-        return score
+            if typed == 0: distance += (self.ml_loc[x] - other.ml_loc[x])**2           # euclidian
+            elif typed == 1: distance += abs(self.ml_loc[x] - other.ml_loc[x])         # manhattan
+            elif typed == 2: distance += abs(self.ml_loc[x] - other.ml_loc[x])**p      # minkowski
+
+        if typed == 0: distance **= 1/2
+        elif typed == 2: distance **= 1/p
+        return distance
+
+    def display_score(self):
+        rs.AddTextDot("{}\n{}\n{}\n{}".format(self.length_score, self.adjacency_score, self.vector_score, self.location_score), self.mid)
 
     def _insrt_find(self):
         """Find insertion points for middle portion and the end one."""
-        self.pt_count, self.remnent = divmod(self.length, module)
+        self.pt_count, self.remnent = divmod(round(self.length, 1) , module)
         _uni_vec = rs.VectorUnitize(self.vec)
         _vec = rs.VectorScale(_uni_vec, self.remnent/2)
         _first_pt = rs.PointAdd(self.sta, _vec)
@@ -169,7 +174,7 @@ class Segment:
         g = rs.AddGroup()
         _blks_mids = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1), self.ang) for x in range(len(self.insrt_pts))]
         rs.AddObjectsToGroup(_blks_mids, g)
-        if self.remnent > 0.05:
+        if self.remnent > 0.1:
             _blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.ang)
             _blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.ang)
             rs.AddObjectsToGroup([_blks_sta, _blks_end], g)
@@ -195,6 +200,25 @@ def blks_smpl_match(blks, smpl_cls):
             if not j.blk_type and j.domain[0] < _t < j.domain[1]:
                 j.blk_type = rs.BlockInstanceName(i)
 
+def parse_input(geos):
+    for x in range(1, len(geos)):
+        if rs.IsCurve(geos[x]) != rs.IsCurve(geos[x-1]):
+            raise TypeError("Inconsistant input!")
+    if rs.IsCurve(geos[0]):
+        return geos
+    else:
+        return _convert_breps(geos)
+    
+
+def _convert_breps(breps):
+    fpts = []
+    for i in breps:
+        _srfs = rs.ExplodePolysurfaces(i)
+        _srfs.sort(key = lambda j:rs.SurfaceAreaCentroid(j)[0][2])
+        fpts.append(rs.DuplicateSurfaceBorder(_srfs[-1]))
+        rs.DeleteObjects(_srfs)
+    rs.DeleteObjects(breps)
+    return fpts
 
 # dbscan
 
@@ -315,11 +339,12 @@ def leveling_2d(dataset, tol = 0.1):
 
 # define classes
 smpl_set = rs.GetObjects('blocks/sample', 4096|4)
-ipts = rs.GetObjects('input', 4)
+ipts = rs.GetObjects('input', 4|16)
 
 rs.EnableRedraw(False)
 
 # separate blocks and sample curves
+ipts = parse_input(ipts)
 blks, smpl = separate_input(smpl_set)
 
 # define class
@@ -338,7 +363,10 @@ for ipt_cls in ipt_clss:
 
 
 [ipt_cls.deploy_facade() for ipt_cls in ipt_clss]
-# smpl_cls.deploy_facade()
+# [[j.display_score() for j in i.seg_cls] for i in ipt_clss]
+# [i.display_score() for i in smpl_cls.seg_cls]
+
+
 
 # smpl_cls.dbscan_clustering()
 # smpl_cls.kmeans_clustering()
