@@ -8,11 +8,12 @@ class Footprint:
 
     def __init__(self, id):
         self.id = id
+        self.cen = rs.CurveAreaCentroid(id)[0]
         self.domain = rs.CurveDomain(id)
         self._simplify_curve()
-        self._orient_calibration()
         self._seam_calibration()
         self.segs = rs.ExplodeCurves(id)
+        self._orient_calibration()
         self.length_list = [rs.CurveLength(i) for i in self.segs]
         self.length_inteval = [min(self.length_list), max(self.length_list)]
         self.seg_cls = [Segment(i, self) for i in self.segs]
@@ -23,17 +24,15 @@ class Footprint:
         rs.SimplifyCurve(self.id)
 
     def _orient_calibration(self):
-        """
-        In here the curve gets calibrated its orientation.
-        """
+        """In here the curve gets calibrated its orientation."""
         cco = rs.ClosedCurveOrientation(self.id)
         if cco < 0:
             rs.ReverseCurve(self.id)
             [rs.ReverseCurve(i) for i in self.segs]
+            self.segs = self.segs[::-1]
     
     def _seam_calibration(self):
-        """
-        """
+        """In here the curve realigns the seam for itself"""
         t = rs.CurveClosestPoint(self.id, [-float("inf"), -float("inf"), 0])
         pt = rs.EvaluateCurve(self.id, t)
         newPt = sorted(rs.CurvePoints(self.id), key = lambda i:rs.Distance(pt, i))[0]
@@ -46,19 +45,19 @@ class Footprint:
         except:
             raise KeyError("The self.seg_cls doesn't exist!")
 
-    def leveling_clustering_Obsolete(self):
+    def leveling_clustering_OBSOLETE(self):
         self.con_locs = [i.ml_loc for i in self.seg_cls]
         self.v_clusters = leveling_2d(self.con_locs)
         self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
         self._labeling_clusters()
 
-    def dbscan_clustering_Obsolete(self):
+    def dbscan_clustering_OBSOLETE(self):
         self.con_locs = [i.ml_loc for i in self.seg_cls]
         self.v_clusters = dbscan(self.con_locs, 0.02, 1)
         self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
         self._labeling_clusters()
 
-    def kmeans_clustering_Obsolete(self):
+    def kmeans_clustering_OBSOLETE(self):
         self.con_locs = [i.ml_loc for i in self.seg_cls]
         k, self.v_clusters = k_means(self.con_locs, max_k)
         self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
@@ -101,12 +100,12 @@ class Segment:
         self.adjacency_stating()
         self.adjacency_scoring()
         self.length_scoring()
+        self.vector_scoring()
+        self.location_scoring()
         self.vectorize()
 
     def adjacency_stating(self):
-        """
-        Check the status of adjacency, -1 means clockwise, 1 means counter clockwise
-        """
+        """Check the status of adjacency, -1 means clockwise, 1 means counter clockwise"""
         if len(self.adjacency) < 2: raise IndexError("self.adjacency doesn't have enough members")
         ccp_0 = rs.VectorCrossProduct(self.vec, self.adjacency[0].vec)[2]
         ccp_0 /= abs(ccp_0)
@@ -115,9 +114,7 @@ class Segment:
         self.adjacency_state = [ccp_0, ccp_1]
 
     def adjacency_scoring(self):
-        """
-        Score different status for the adjacency state.
-        """
+        """Score different status for the adjacency state."""
         if self.adjacency_state == [-1,-1]:
             self.adjacency_score = 0
         elif self.adjacency_state == [-1,1]:
@@ -129,22 +126,36 @@ class Segment:
         else:
             raise ValueError("value in adjacency_state list is wrong.")
     
+    def vector_scoring(self):
+        """Score different vectors for the segment."""
+        ang = rs.VectorAngle([0,1,0], self.vec)
+        self.vector_score = unitize_mapping(ang, 0, 180)
+
+    def location_scoring(self):
+        """Score different locations for the segment."""
+        _vec = rs.VectorCreate(self.mid, self.fpt.cen)
+        ang = rs.VectorAngle([0,1,0], _vec)
+        self.location_score = unitize_mapping(ang, 0, 180)
+
     def length_scoring(self):
-        """
-        Score different lengths.
-        """
+        """Score different lengths."""
         self.length_score = unitize_mapping(self.length, self.fpt.length_inteval[0], self.fpt.length_inteval[1])
 
     def vectorize(self):
-        self.ml_loc = [self.length_score, self.adjacency_score]
+        """put in feature matrix with weigh"""          # --------------- weigh is changing here ---------------
+        self.ml_loc = [self.length_score * 0.5, self.adjacency_score * 2, self.vector_score * 1.25, self.location_score * 0.75]
+        # self.ml_loc = [self.length_score * 1, self.adjacency_score * 1, self.vector_score * 1, self.location_score * 1]
     
     def vector_compare(self, other):
-        return ((self.ml_loc[0] - other.ml_loc[0])**2 + (self.ml_loc[1] - other.ml_loc[1])**2)**0.5
+        """compare the euclidian distance of two vectors"""
+        score = 0
+        for x in range(len(self.ml_loc)):
+            score += (self.ml_loc[x] - other.ml_loc[x])**2
+        score **= 0.5
+        return score
 
     def _insrt_find(self):
-        """
-        Find insertion points for middle portion and the end one.
-        """
+        """Find insertion points for middle portion and the end one."""
         self.pt_count, self.remnent = divmod(self.length, module)
         _uni_vec = rs.VectorUnitize(self.vec)
         _vec = rs.VectorScale(_uni_vec, self.remnent/2)
@@ -154,9 +165,7 @@ class Segment:
         return _insrt_pts, _end_pt
     
     def facade_populate(self):
-        """
-        populate different facade types based on the type property.
-        """
+        """populate different facade types based on the type property."""
         g = rs.AddGroup()
         _blks_mids = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1), self.ang) for x in range(len(self.insrt_pts))]
         rs.AddObjectsToGroup(_blks_mids, g)
@@ -329,14 +338,11 @@ for ipt_cls in ipt_clss:
 
 
 [ipt_cls.deploy_facade() for ipt_cls in ipt_clss]
-
+# smpl_cls.deploy_facade()
 
 # smpl_cls.dbscan_clustering()
 # smpl_cls.kmeans_clustering()
 # smpl_cls.display_labels()
-
-
-
 # [ipt_cls.display_labels() for ipt_cls in ipt_clss]
 
 # -------------------------------- GC --------------------------------
