@@ -1,4 +1,5 @@
 import rhinoscriptsyntax as rs
+import Rhino.Geometry as rg
 import random
 
 """
@@ -8,6 +9,7 @@ v 0.1.1-alpha
 
 max_k = 8
 module = 1.5
+module_tol = 0.1
 
 class Footprint:
 
@@ -101,7 +103,7 @@ class Segment:
         self.length_score = -1
         self.blk_type = None
 
-        self.insrt_pts, self.end_pt = self._insrt_find()
+        self.vecs, self.insrt_pts = self._insrt_find()
         self.orients = [self._get_orient(i) for i in self.vecs]
 
     def activate(self):
@@ -174,27 +176,49 @@ class Segment:
 
     def _insrt_find(self):
         """Find insertion points for middle portion and the end one."""
-        self.pt_count, self.remnent = divmod(round(self.length, 1) , module)
-        _uni_vec = rs.VectorUnitize(self.vec)
-        _vec = rs.VectorScale(_uni_vec, self.remnent/2)
-        _first_pt = rs.PointAdd(self.sta, _vec)
-        _insrt_pts = [rs.PointAdd(_first_pt, rs.VectorScale(_uni_vec, x*module)) for x in range(int(self.pt_count) + 1)]
-        self.vecs = [rs.CurveTangent(self.id, rs.CurveClosestPoint(self.id, i)) for i in _insrt_pts]
-        _insrt_pts, _end_pt = _insrt_pts[:-1], _insrt_pts[-1]
-        return _insrt_pts, _end_pt
-    
+        _rh_crv = rs.coercecurve(self.id)
+        _ts = rs.DivideCurveEquidistant(self.id, module, False, False)
+        try: 
+            _rem_crv = _rh_crv.Split(_ts[-1])[-1]
+            self.remnant = _rem_crv.GetLength()
+        except: 
+            self.remnant = 0
+        
+        main_subseg = self.id
+        if module_tol / 2 < self.remnant < module:
+            t_left = _rh_crv.LengthParameter(self.remnant / 2)[1]
+            t_right =  _rh_crv.LengthParameter(self.length - self.remnant / 2)[1]
+            _temp_crvs = rs.SplitCurve(self.id, [t_left, t_right], False)
+            main_subseg = _temp_crvs[1]
+            side_subsegs = [_temp_crvs[0], _temp_crvs[2]]
+        pts = list(rs.DivideCurveEquidistant(main_subseg, module, True, True))
+        vecs = get_sequential_vec(pts)
+        pts = pts[:-1]
+        if module_tol / 2 < self.remnant < module:
+            sta_pts = [rs.CurveStartPoint(i) for i in side_subsegs]
+            end_pts = [rs.CurveEndPoint(i) for i in side_subsegs]
+            added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
+            vecs = [added_vecs[0]] + vecs + [added_vecs[1]]
+            pts = [sta_pts[0]] + pts + [sta_pts[1]]
+        return vecs, pts
+
     def facade_populate(self):
         """populate different facade types based on the type property."""
         g = rs.AddGroup()
-        _blks_mids = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1), self.orients[x]) for x in range(len(self.insrt_pts))]
-        rs.AddObjectsToGroup(_blks_mids, g)
-        if self.remnent > 0.1:
-            _blks_sta = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.sta, (1,1,1)), self.sta, [self.remnent/2/module, 1, 1]), self.sta, self.orient)
-            _blks_end = rs.RotateObject(rs.ScaleObject(rs.InsertBlock(self.blk_type, self.end_pt, (1,1,1)), self.end_pt, [self.remnent/2/module, 1, 1]), self.end_pt, self.orient)
-            rs.AddObjectsToGroup([_blks_sta, _blks_end], g)
-
+        _blks = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1)) for x in range(len(self.insrt_pts))]
+        rs.AddObjectsToGroup(_blks, g)
+        if self.remnant > 0.1:
+            scaling = (self.remnant/2)/module
+            rs.ScaleObject(_blks[0], self.insrt_pts[0], [scaling, 1, 1])
+            rs.ScaleObject(_blks[-1], self.insrt_pts[-1], [scaling, 1, 1])
+        [rs.RotateObject(_blks[x], self.insrt_pts[x], self.orients[x]) for x in range(len(_blks))]
 
 # -------------------------------- GENERAL FUNCTIONS --------------------------------
+
+def get_sequential_vec(pts):
+    pts_0 = pts[:-1]
+    pts_1 = pts[1:]
+    return [rs.VectorCreate(pts_1[x], pts_0[x]) for x in range(len(pts_0))]
 
 def unitize_mapping(input_value, min_value, max_value):
     scaled_value = (input_value - min_value) / (max_value - min_value)
@@ -389,6 +413,6 @@ for ipt_cls in ipt_clss:
 # [ipt_cls.display_labels() for ipt_cls in ipt_clss]
 
 # -------------------------------- GC --------------------------------
-
+rs.EnableRedraw()
 rs.DeleteObjects(smpl_cls.segs)
 [rs.DeleteObjects(i.segs) for i in ipt_clss]
