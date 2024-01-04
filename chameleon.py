@@ -1,15 +1,23 @@
 import rhinoscriptsyntax as rs
 import Rhino.Geometry as rg
 import random
+import math as m
 
 """
-AI Block (WIP)
-v 0.1.1-alpha
+Chameleon (WIP)
+
+v 0.1.1-alpha   Basic ML functionality with orthogonal method.
+v 0.1.2-alpha   Improvement of the recognition accuracy for complicate situation.
+v 0.1.3-alpha   Improvement of the recognition accuracy for similar convex condition.
+v 0.1.4-alpha   Support curvy edges.
+v 0.1.5-alpha   Improvement of the recognition accuracy in adjacency.
+v 0.1.6-alpha   Upgraded the initial matching algorithm for more diverse scenarios.
+
 """
 
 max_k = 8
 module = 1.5
-module_tol = 0.1
+module_tol = 0.2
 
 class Footprint:
 
@@ -49,6 +57,15 @@ class Footprint:
                 i.adjacency = [self.seg_cls[(x - 1) % len(self.seg_cls)], self.seg_cls[(x + 1) % len(self.seg_cls)]]
         except:
             raise KeyError("The self.seg_cls doesn't exist!")
+
+    def softmax_adjacency(self, method = 1):
+        adjacency_list = [i.adjacency_score for i in self.seg_cls]
+        if method == 0:                     # softmax
+            adjusted = softmax(adjacency_list)
+        if method == 1:                     # linear
+            adjusted = linear_map(adjacency_list)
+        for x in range(len(self.seg_cls)):
+            self.seg_cls[x].adjacency_score = adjusted[x]
 
     def leveling_clustering_OBSOLETE(self):
         self.con_locs = [i.ml_loc for i in self.seg_cls]
@@ -112,34 +129,29 @@ class Segment:
         self.length_scoring()
         self.vector_scoring()
         self.location_scoring()
+        self.curvature_scoring()
         self.vectorize()
 
-    def adjacency_stating(self):
+    def adjacency_stating(self, magni_coef = 2):
         """Check the status of adjacency, -1 means clockwise, 1 means counter clockwise"""
         if len(self.adjacency) < 2: raise IndexError("self.adjacency doesn't have enough members")
         ccp_0 = rs.VectorCrossProduct(self.vec, self.adjacency[0].vec)[2]
         ccp_0 /= abs(ccp_0)
+        uva_0 = unitize_mapping(rs.VectorAngle(self.adjacency[0].vec, self.vec), 0, 180)
         ccp_1 = rs.VectorCrossProduct(self.adjacency[1].vec, self.vec)[2]
         ccp_1 /= abs(ccp_1)
-        self.adjacency_state = [ccp_0, ccp_1]
+        uva_1 = unitize_mapping(rs.VectorAngle(self.adjacency[1].vec, self.vec), 0, 180)
+        self.adjacency_state = [ccp_0 * uva_0 * magni_coef, ccp_1 * uva_1 * magni_coef]
 
     def adjacency_scoring(self):
         """Score different status for the adjacency state."""
-        if self.adjacency_state == [-1,-1]:
-            self.adjacency_score = 0
-        elif self.adjacency_state == [-1,1]:
-            self.adjacency_score = 0.5
-        elif self.adjacency_state == [1,-1]:
-            self.adjacency_score = 0.5
-        elif self.adjacency_state == [1,1]:
-            self.adjacency_score = 1
-        else:
-            raise ValueError("value in adjacency_state list is wrong.")
+        _v = linear_interpolation(self.adjacency_state)
+        self.adjacency_score = _v
     
     def vector_scoring(self):
         """Score different vectors for the segment."""
         ang = abs(rs.VectorAngle([0,1,0], self.vec) - 90)
-        self.vector_score = unitize_mapping(ang, 0, 180)
+        self.vector_score = unitize_mapping(ang, 0, 90)
 
     def location_scoring(self):
         """Score different locations for the segment."""
@@ -147,14 +159,19 @@ class Segment:
         ang = rs.VectorAngle([0,1,0], _vec)
         self.location_score = unitize_mapping(ang, 0, 180)
 
+    def curvature_scoring(self):
+        """Score the curvature for the segment"""
+        self.curvature_score = self.vec_span / 90
+
     def length_scoring(self):
         """Score different lengths."""
         self.length_score = unitize_mapping(self.length, self.fpt.length_inteval[0], self.fpt.length_inteval[1])
 
     def vectorize(self):
         """put in feature matrix with weigh"""          # --------------- weigh ---------------
-        self.ml_loc = [self.length_score * 0.5, self.adjacency_score * 2, self.vector_score * 1.25, self.location_score * 0.5]
-    
+#        self.ml_loc = [self.length_score * 0.5, self.adjacency_score * 5, self.vector_score * 1.25, self.location_score * 0.75]
+        self.ml_loc = [self.length_score * 0.66, self.adjacency_score * 1.8, self.vector_score * 0.75, self.curvature_score * 2]
+
     def vector_compare(self, other, typed = 0):
         """compare the distance of two vectors"""
         distance = 0
@@ -175,7 +192,7 @@ class Segment:
         return rs.VectorAngle(vec, [1, 0, 0]) if rs.VectorCrossProduct(vec, [1, 0, 0])[2] < 0 else -rs.VectorAngle(vec, [1,0,0])
 
     def _insrt_find(self):
-        """Find insertion points for middle portion and the end one."""
+        """Find insertion points."""
         _rh_crv = rs.coercecurve(self.id)
         _ts = rs.DivideCurveEquidistant(self.id, module, False, False)
         try: 
@@ -184,14 +201,18 @@ class Segment:
         except: 
             self.remnant = 0
         
-        main_subseg = self.id
         if module_tol / 2 < self.remnant < module:
             t_left = _rh_crv.LengthParameter(self.remnant / 2)[1]
             t_right =  _rh_crv.LengthParameter(self.length - self.remnant / 2)[1]
             _temp_crvs = rs.SplitCurve(self.id, [t_left, t_right], False)
             main_subseg = _temp_crvs[1]
             side_subsegs = [_temp_crvs[0], _temp_crvs[2]]
-        pts = list(rs.DivideCurveEquidistant(main_subseg, module, True, True))
+        else:
+            main_subseg = rs.CopyObject(self.id)
+            side_subsegs = []
+
+        pts = list(rs.DivideCurveEquidistant(main_subseg, module, False, True))
+        
         vecs = get_sequential_vec(pts)
         pts = pts[:-1]
         if module_tol / 2 < self.remnant < module:
@@ -200,6 +221,11 @@ class Segment:
             added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
             vecs = [added_vecs[0]] + vecs + [added_vecs[1]]
             pts = [sta_pts[0]] + pts + [sta_pts[1]]
+        
+        # gc
+        if side_subsegs: rs.DeleteObjects(side_subsegs)
+        rs.DeleteObject(main_subseg)
+
         return vecs, pts
 
     def facade_populate(self):
@@ -207,7 +233,7 @@ class Segment:
         g = rs.AddGroup()
         _blks = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1)) for x in range(len(self.insrt_pts))]
         rs.AddObjectsToGroup(_blks, g)
-        if self.remnant > 0.1:
+        if self.remnant > module_tol / 2:
             scaling = (self.remnant/2)/module
             rs.ScaleObject(_blks[0], self.insrt_pts[0], [scaling, 1, 1])
             rs.ScaleObject(_blks[-1], self.insrt_pts[-1], [scaling, 1, 1])
@@ -215,7 +241,24 @@ class Segment:
 
 # -------------------------------- GENERAL FUNCTIONS --------------------------------
 
+def linear_map(values):
+    span = [min(values), max(values)]
+    return [unitize_mapping(i, span[0], span[1]) for i in values]
+
+def linear_interpolation(values, t = 0.5):
+    return (1 - t) * values[0] + t * values[1]
+
+def softmax(values):
+    exp_values = [m.exp(i) for i in values]
+    sum_exp_values = sum(exp_values)
+    softmax_values = [i / sum_exp_values for i in exp_values]
+    return softmax_values
+
+def sigmoid(value):
+    return 1 / (1 + m.exp(-value))
+
 def get_sequential_vec(pts):
+    """get sequential vectors based on a list of points. e.g. (p1->p2)"""
     pts_0 = pts[:-1]
     pts_1 = pts[1:]
     return [rs.VectorCreate(pts_1[x], pts_0[x]) for x in range(len(pts_0))]
@@ -225,21 +268,37 @@ def unitize_mapping(input_value, min_value, max_value):
     return scaled_value
 
 def separate_input(input_params):
+    """separate the input parameters into curves and breps with prerequisites"""
     for x, i in enumerate(input_params):
         if rs.IsCurve(i):
             crv = input_params.pop(x)
     return input_params, crv
 
 def blks_smpl_match(blks, smpl_cls):
+    """match each segment with its block type"""
+    segs = list(smpl_cls.seg_cls)
+    random.shuffle(blks)
     for i in blks:
         bbb = rs.BoundingBox(i)
         blk_cen = [(bbb[6][0] + bbb[0][0])/2, (bbb[6][1] + bbb[0][1])/2, (bbb[6][2] + bbb[0][2])/2]
-        _t = rs.CurveClosestPoint(smpl_cls.id, blk_cen)
-        for j in smpl_cls.seg_cls:
-            if not j.blk_type and j.domain[0] < _t < j.domain[1]:
-                j.blk_type = rs.BlockInstanceName(i)
+        target_distance = (bbb[6][1] - bbb[0][1]) / 2
+        if segs:
+            dist_list = []
+            for j in segs:
+                _t = rs.CurveClosestPoint(j.id, blk_cen)
+                _pt = rs.EvaluateCurve(j.id, _t)
+                _vec = rs.VectorCreate(_pt, blk_cen)
+                dist_list.append((_vec[0]**2 + _vec[1]**2)**0.5)
+            min_dis = min(dist_list)
+            if min_dis > target_distance + 0.02:
+                continue
+            _idx = dist_list.index(min_dis)
+            segs[_idx].blk_type = rs.BlockInstanceName(i)
+            segs.pop(_idx)
+        else: break
 
 def parse_input(geos):
+    """parse the input geometries to curve only"""
     for x in range(1, len(geos)):
         if rs.IsCurve(geos[x]) != rs.IsCurve(geos[x-1]):
             raise TypeError("Inconsistant input!")
@@ -250,6 +309,7 @@ def parse_input(geos):
     
 
 def _convert_breps(breps):
+    """convert breps into top surface border curves"""
     fpts = []
     for i in breps:
         _srfs = rs.ExplodePolysurfaces(i)
@@ -393,13 +453,16 @@ ipt_clss = [Footprint(i) for i in ipts]
 # match blocks and curve segs
 blks_smpl_match(blks, smpl_cls)
 
+# softmax the score
+smpl_cls.softmax_adjacency()
+[i.softmax_adjacency() for i in ipt_clss]
+
 # match types
 for ipt_cls in ipt_clss:
     for i in ipt_cls.seg_cls:
         _ = [i.vector_compare(j) for j in smpl_cls.seg_cls]
         dic = dict(zip(_, smpl_cls.seg_cls))
         i.blk_type = dic[min(_)].blk_type
-
 
 [ipt_cls.deploy_facade() for ipt_cls in ipt_clss]
 # [[j.display_score() for j in i.seg_cls] for i in ipt_clss]
@@ -413,6 +476,6 @@ for ipt_cls in ipt_clss:
 # [ipt_cls.display_labels() for ipt_cls in ipt_clss]
 
 # -------------------------------- GC --------------------------------
-rs.EnableRedraw()
+
 rs.DeleteObjects(smpl_cls.segs)
 [rs.DeleteObjects(i.segs) for i in ipt_clss]
