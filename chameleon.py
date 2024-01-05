@@ -9,9 +9,10 @@ Chameleon (WIP)
 v 0.1.1-alpha   Basic ML functionality with orthogonal method.
 v 0.1.2-alpha   Improvement of the recognition accuracy for complicate situation.
 v 0.1.3-alpha   Improvement of the recognition accuracy for similar convex condition.
-v 0.1.4-alpha   Support curvy edges.
+v 0.1.4-alpha   Supported curvy edges.
 v 0.1.5-alpha   Improvement of the recognition accuracy in adjacency.
-v 0.1.6-alpha   Upgraded the initial matching algorithm for more diverse scenarios.
+v 0.1.6-alpha   Rewrote the initial matching algorithm for more diverse scenarios.
+v 0.1.7-alpha   Adjusted the last piece scenario for each segment.
 
 """
 
@@ -135,12 +136,12 @@ class Segment:
     def adjacency_stating(self, magni_coef = 2):
         """Check the status of adjacency, -1 means clockwise, 1 means counter clockwise"""
         if len(self.adjacency) < 2: raise IndexError("self.adjacency doesn't have enough members")
-        ccp_0 = rs.VectorCrossProduct(self.vec, self.adjacency[0].vec)[2]
+        ccp_0 = rs.VectorCrossProduct(self.vec_sta, self.adjacency[0].vec)[2]
         ccp_0 /= abs(ccp_0)
-        uva_0 = unitize_mapping(rs.VectorAngle(self.adjacency[0].vec, self.vec), 0, 180)
-        ccp_1 = rs.VectorCrossProduct(self.adjacency[1].vec, self.vec)[2]
+        uva_0 = unitize_mapping(rs.VectorAngle(self.adjacency[0].vec_sta, self.vec_sta), 0, 180)
+        ccp_1 = rs.VectorCrossProduct(self.adjacency[1].vec_sta, self.vec_sta)[2]
         ccp_1 /= abs(ccp_1)
-        uva_1 = unitize_mapping(rs.VectorAngle(self.adjacency[1].vec, self.vec), 0, 180)
+        uva_1 = unitize_mapping(rs.VectorAngle(self.adjacency[1].vec_sta, self.vec_sta), 0, 180)
         self.adjacency_state = [ccp_0 * uva_0 * magni_coef, ccp_1 * uva_1 * magni_coef]
 
     def adjacency_scoring(self):
@@ -170,7 +171,7 @@ class Segment:
     def vectorize(self):
         """put in feature matrix with weigh"""          # --------------- weigh ---------------
 #        self.ml_loc = [self.length_score * 0.5, self.adjacency_score * 5, self.vector_score * 1.25, self.location_score * 0.75]
-        self.ml_loc = [self.length_score * 0.66, self.adjacency_score * 1.8, self.vector_score * 0.75, self.curvature_score * 2]
+        self.ml_loc = [self.length_score * 0.66, self.adjacency_score * 2, self.vector_score * 0.75, self.curvature_score * 2]
 
     def vector_compare(self, other, typed = 0):
         """compare the distance of two vectors"""
@@ -192,7 +193,7 @@ class Segment:
         return rs.VectorAngle(vec, [1, 0, 0]) if rs.VectorCrossProduct(vec, [1, 0, 0])[2] < 0 else -rs.VectorAngle(vec, [1,0,0])
 
     def _insrt_find(self):
-        """Find insertion points."""
+        """Find block insertion points for the segment."""
         _rh_crv = rs.coercecurve(self.id)
         _ts = rs.DivideCurveEquidistant(self.id, module, False, False)
         try: 
