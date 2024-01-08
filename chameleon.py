@@ -13,6 +13,7 @@ v 0.1.4-alpha   Supported curvy edges.
 v 0.1.5-alpha   Improvement of the recognition accuracy in adjacency.
 v 0.1.6-alpha   Rewrote the initial matching algorithm for more diverse scenarios.
 v 0.1.7-alpha   Adjusted the last piece scenario for each segment.
+v 0.1.8-alpha   Removed all obsolete functions/methods; Added a end type property and corresponding block-scaling strategy.
 
 """
 
@@ -68,24 +69,6 @@ class Footprint:
         for x in range(len(self.seg_cls)):
             self.seg_cls[x].adjacency_score = adjusted[x]
 
-    def leveling_clustering_OBSOLETE(self):
-        self.con_locs = [i.ml_loc for i in self.seg_cls]
-        self.v_clusters = leveling_2d(self.con_locs)
-        self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
-        self._labeling_clusters()
-
-    def dbscan_clustering_OBSOLETE(self):
-        self.con_locs = [i.ml_loc for i in self.seg_cls]
-        self.v_clusters = dbscan(self.con_locs, 0.02, 1)
-        self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
-        self._labeling_clusters()
-
-    def kmeans_clustering_OBSOLETE(self):
-        self.con_locs = [i.ml_loc for i in self.seg_cls]
-        k, self.v_clusters = k_means(self.con_locs, max_k)
-        self.clusters = find_parent(self.con_locs, self.seg_cls, self.v_clusters)
-        self._labeling_clusters()
-
     def _labeling_clusters(self):
         for x, i in enumerate(self.clusters):
             for j in i:
@@ -120,6 +103,8 @@ class Segment:
         self.adjacency_score = -1
         self.length_score = -1
         self.blk_type = None
+        self.endtype = 0
+        self.alignment = 0
 
         self.vecs, self.insrt_pts = self._insrt_find()
         self.orients = [self._get_orient(i) for i in self.vecs]
@@ -202,6 +187,7 @@ class Segment:
         except: 
             self.remnant = 0
         
+        # consider the condition of having remnant
         if module_tol / 2 < self.remnant < module:
             t_left = _rh_crv.LengthParameter(self.remnant / 2)[1]
             t_right =  _rh_crv.LengthParameter(self.length - self.remnant / 2)[1]
@@ -217,12 +203,19 @@ class Segment:
         vecs = get_sequential_vec(pts)
         pts = pts[:-1]
         if module_tol / 2 < self.remnant < module:
-            sta_pts = [rs.CurveStartPoint(i) for i in side_subsegs]
-            end_pts = [rs.CurveEndPoint(i) for i in side_subsegs]
-            added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
-            vecs = [added_vecs[0]] + vecs + [added_vecs[1]]
-            pts = [sta_pts[0]] + pts + [sta_pts[1]]
-        
+            if self.endtype == 1:
+                sta_pts = [rs.CurveStartPoint(i) for i in side_subsegs]
+                end_pts = [rs.CurveEndPoint(i) for i in side_subsegs]
+                added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
+                vecs = [added_vecs[0]] + vecs + [added_vecs[1]]
+                pts = [sta_pts[0]] + pts + [sta_pts[1]]
+            else:
+                sta_pts = [self.sta, pts[-1]]
+                end_pts = [pts[1], self.end]
+                added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
+                vecs = [added_vecs[0]] + vecs[1:-1] + [added_vecs[1]]
+                pts = [sta_pts[0]] + pts[1:-1] + [sta_pts[1]]
+
         # gc
         if side_subsegs: rs.DeleteObjects(side_subsegs)
         rs.DeleteObject(main_subseg)
@@ -235,7 +228,7 @@ class Segment:
         _blks = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1)) for x in range(len(self.insrt_pts))]
         rs.AddObjectsToGroup(_blks, g)
         if self.remnant > module_tol / 2:
-            scaling = (self.remnant/2)/module
+            scaling = ((self.remnant/2) + module)/module if self.endtype == 0 else (self.remnant/2)/module
             rs.ScaleObject(_blks[0], self.insrt_pts[0], [scaling, 1, 1])
             rs.ScaleObject(_blks[-1], self.insrt_pts[-1], [scaling, 1, 1])
         [rs.RotateObject(_blks[x], self.insrt_pts[x], self.orients[x]) for x in range(len(_blks))]
@@ -265,6 +258,10 @@ def get_sequential_vec(pts):
     return [rs.VectorCreate(pts_1[x], pts_0[x]) for x in range(len(pts_0))]
 
 def unitize_mapping(input_value, min_value, max_value):
+    if input_value > max_value or input_value < min_value:
+        raise ValueError("map input out of bound!")
+    if max_value - min_value == 0:
+        return 0.5
     scaled_value = (input_value - min_value) / (max_value - min_value)
     return scaled_value
 
@@ -320,120 +317,6 @@ def _convert_breps(breps):
     rs.DeleteObjects(breps)
     return fpts
 
-# dbscan
-
-def calculate_distance(point1, point2):
-    return ((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2) ** 0.5
-
-def get_neighbors(data, point, epsilon):
-    return [other_point for other_point in data if calculate_distance(point, other_point) <= epsilon]
-
-def dbscan(data, epsilon, min_points):
-    labels = [0] * len(data)
-    cluster_id = 0
-    clusters = []
-
-    for i, point in enumerate(data):
-        if labels[i] != 0:
-            continue
-
-        neighbors = get_neighbors(data, point, epsilon)
-
-        if len(neighbors) < min_points:
-            labels[i] = -1  # Mark as noise
-        else:
-            cluster_id += 1
-            new_cluster = expand_cluster(data, labels, point, neighbors, cluster_id, epsilon, min_points)
-            clusters.append(new_cluster)
-
-    return clusters
-
-def expand_cluster(data, labels, point, neighbors, cluster_id, epsilon, min_points):
-    new_cluster = [point]
-    labels[data.index(point)] = cluster_id
-
-    i = 0
-    while i < len(neighbors):
-        neighbor = neighbors[i]
-        neighbor_index = data.index(neighbor)
-
-        if labels[neighbor_index] == -1:
-            labels[neighbor_index] = cluster_id
-            new_cluster.append(neighbor)
-        elif labels[neighbor_index] == 0:
-            labels[neighbor_index] = cluster_id
-            new_neighbors = get_neighbors(data, neighbor, epsilon)
-            if len(new_neighbors) >= min_points:
-                neighbors.extend(new_neighbors)
-                new_cluster.extend(new_neighbors)
-
-        i += 1
-
-    return new_cluster
-
-# kmeans
-
-def calculate_distance(point1, point2):
-    return sum((a - b) ** 2 for a, b in zip(point1, point2)) ** 0.5
-
-def assign_to_clusters(data, centroids):
-    clusters = [[] for _ in centroids]
-    for point in data:
-        distances = [calculate_distance(point, centroid) for centroid in centroids]
-        cluster_assignment = distances.index(min(distances))
-        clusters[cluster_assignment].append(point)
-    return clusters
-
-def calculate_centroids(clusters):
-    return [tuple(map(lambda x: sum(x) / len(x) if len(x) > 0 else 0, zip(*cluster))) for cluster in clusters]
-
-def sum_squared_distances(data, centroids, clusters, penalty):
-    sse = 0
-    for i in range(len(centroids)):
-        for point in clusters[i]:
-            sse += calculate_distance(point, centroids[i]) ** 2
-        sse += penalty
-    return sse
-
-def k_means(data, k, max_iterations=1000, tolerance=1e-2000):
-
-    centroids = random.sample(data, k)
-
-    for _ in range(max_iterations):
-        clusters = assign_to_clusters(data, centroids)
-        new_centroids = calculate_centroids(clusters)
-        if all(calculate_distance(centroid1, centroid2) < tolerance for centroid1, centroid2 in zip(centroids, new_centroids)):
-            break
-        centroids = new_centroids
-
-    return centroids, clusters
-
-def find_parent(data, f_data, tree):
-    f_data = list(f_data)
-    f_tree = list(tree)
-    for x, i in enumerate(f_tree):
-        for y, j in enumerate(i):
-            if j in data:
-                f_tree[x][y] = f_data[data.index(j)]
-                f_data.pop(data.index(j))
-                data.remove(j)
-    return f_tree
-
-def leveling_2d(dataset, tol = 0.1):
-    flat_data = [i[0]*10 + i[1] for i in dataset]
-    flat_data.sort()
-
-    tree = []
-    _ = []
-    for x in range(len(flat_data)-1):
-        _.append(dataset[x])
-        if flat_data[x+1] - flat_data[x] > tol:
-            tree.append(_)
-            _ = []
-    _.append(dataset[-1])
-    tree.append(_)
-    return tree
-
 # -------------------------------- MAIN --------------------------------
 
 
@@ -469,12 +352,6 @@ for ipt_cls in ipt_clss:
 # [[j.display_score() for j in i.seg_cls] for i in ipt_clss]
 # [i.display_score() for i in smpl_cls.seg_cls]
 
-
-
-# smpl_cls.dbscan_clustering()
-# smpl_cls.kmeans_clustering()
-# smpl_cls.display_labels()
-# [ipt_cls.display_labels() for ipt_cls in ipt_clss]
 
 # -------------------------------- GC --------------------------------
 
