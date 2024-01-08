@@ -14,6 +14,7 @@ v 0.1.5-alpha   Improvement of the recognition accuracy in adjacency.
 v 0.1.6-alpha   Rewrote the initial matching algorithm for more diverse scenarios.
 v 0.1.7-alpha   Adjusted the last piece scenario for each segment.
 v 0.1.8-alpha   Removed all obsolete functions/methods; Added a end type property and corresponding block-scaling strategy.
+v 0.1.9-alpha   Fixed a bug that code won't compile when curve segment is too short.
 
 """
 
@@ -25,9 +26,9 @@ class Footprint:
 
     def __init__(self, id):
         self.id = id
-        self.cen = rs.CurveAreaCentroid(id)[0]
+        self.cen = self._try_get_curve_centroid()
         self.domain = rs.CurveDomain(id)
-        self._simplify_curve()
+        # self._simplify_curve()
         self._seam_calibration()
         self._orient_calibration()
         self.segs = rs.ExplodeCurves(id)
@@ -36,6 +37,15 @@ class Footprint:
         self.seg_cls = [Segment(i, self) for i in self.segs]
         self.seg_adjacency()
         [i.activate() for i in self.seg_cls]
+
+    def _try_get_curve_centroid(self):
+        try:
+            return rs.CurveAreaCentroid(self.id)[0]
+        except:
+            if not rs.IsLayer("Error Message"):
+                rs.AddLayer("Error Message", [255, 0, 0])
+            rs.ObjectLayer(self.id, "Error Message")
+            raise TypeError("Curve must be planar and closed!")
 
     def _simplify_curve(self):
         rs.SimplifyCurve(self.id)
@@ -204,17 +214,24 @@ class Segment:
         pts = pts[:-1]
         if module_tol / 2 < self.remnant < module:
             if self.endtype == 1:
+                # try to build a smaller panel at the end of each segment
                 sta_pts = [rs.CurveStartPoint(i) for i in side_subsegs]
                 end_pts = [rs.CurveEndPoint(i) for i in side_subsegs]
                 added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
                 vecs = [added_vecs[0]] + vecs + [added_vecs[1]]
                 pts = [sta_pts[0]] + pts + [sta_pts[1]]
             else:
-                sta_pts = [self.sta, pts[-1]]
-                end_pts = [pts[1], self.end]
-                added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
-                vecs = [added_vecs[0]] + vecs[1:-1] + [added_vecs[1]]
-                pts = [sta_pts[0]] + pts[1:-1] + [sta_pts[1]]
+                try:
+                    # try to build a larger panel at the end of each segment
+                    sta_pts = [self.sta, pts[-1]]
+                    end_pts = [pts[1], self.end]
+                    added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
+                    vecs = [added_vecs[0]] + vecs[1:-1] + [added_vecs[1]]
+                    pts = [sta_pts[0]] + pts[1:-1] + [sta_pts[1]]
+                except:
+                    # in this scenario the curve segment would be too short to operate 
+                    vecs = [self.vec]
+                    pts = [self.sta]
 
         # gc
         if side_subsegs: rs.DeleteObjects(side_subsegs)
@@ -333,6 +350,7 @@ blks, smpl = separate_input(smpl_set)
 # define class
 smpl_cls = Footprint(smpl)
 ipt_clss = [Footprint(i) for i in ipts]
+
 
 # match blocks and curve segs
 blks_smpl_match(blks, smpl_cls)
