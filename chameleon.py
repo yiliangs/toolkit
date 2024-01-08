@@ -6,15 +6,16 @@ import math as m
 """
 Chameleon (WIP)
 
-v 0.1.1-alpha   Basic ML functionality with orthogonal method.
-v 0.1.2-alpha   Improvement of the recognition accuracy for complicate situation.
-v 0.1.3-alpha   Improvement of the recognition accuracy for similar convex condition.
-v 0.1.4-alpha   Supported curvy edges.
-v 0.1.5-alpha   Improvement of the recognition accuracy in adjacency.
-v 0.1.6-alpha   Rewrote the initial matching algorithm for more diverse scenarios.
-v 0.1.7-alpha   Adjusted the last piece scenario for each segment.
-v 0.1.8-alpha   Removed all obsolete functions/methods; Added a end type property and corresponding block-scaling strategy.
+v 0.2.0-alpha   Fixed bugs that making code not compiling when two line segments are co-line.
 v 0.1.9-alpha   Fixed a bug that code won't compile when curve segment is too short.
+v 0.1.8-alpha   Removed all obsolete functions/methods; Added a end type property and corresponding block-scaling strategy.
+v 0.1.7-alpha   Adjusted the last piece scenario for each segment.
+v 0.1.6-alpha   Rewrote the initial matching algorithm for more diverse scenarios.
+v 0.1.5-alpha   Improvement of the recognition accuracy in adjacency.
+v 0.1.4-alpha   Supported curvy edges.
+v 0.1.3-alpha   Improvement of the recognition accuracy for similar convex condition.
+v 0.1.2-alpha   Improvement of the recognition accuracy for complicate situation.
+v 0.1.1-alpha   Basic ML functionality with orthogonal method.
 
 """
 
@@ -28,7 +29,7 @@ class Footprint:
         self.id = id
         self.cen = self._try_get_curve_centroid()
         self.domain = rs.CurveDomain(id)
-        # self._simplify_curve()
+        self._simplify_curve()
         self._seam_calibration()
         self._orient_calibration()
         self.segs = rs.ExplodeCurves(id)
@@ -113,8 +114,8 @@ class Segment:
         self.adjacency_score = -1
         self.length_score = -1
         self.blk_type = None
-        self.endtype = 0
-        self.alignment = 0
+        self.endtype = 0            # 0: larger panel;  1: smaller panel
+        self.alignment = 0          # 0: mid;   1: right;   -1: left
 
         self.vecs, self.insrt_pts = self._insrt_find()
         self.orients = [self._get_orient(i) for i in self.vecs]
@@ -132,10 +133,10 @@ class Segment:
         """Check the status of adjacency, -1 means clockwise, 1 means counter clockwise"""
         if len(self.adjacency) < 2: raise IndexError("self.adjacency doesn't have enough members")
         ccp_0 = rs.VectorCrossProduct(self.vec_sta, self.adjacency[0].vec)[2]
-        ccp_0 /= abs(ccp_0)
+        ccp_0 = ccp_0 / abs(ccp_0) if ccp_0 != 0 else 0
         uva_0 = unitize_mapping(rs.VectorAngle(self.adjacency[0].vec_sta, self.vec_sta), 0, 180)
         ccp_1 = rs.VectorCrossProduct(self.adjacency[1].vec_sta, self.vec_sta)[2]
-        ccp_1 /= abs(ccp_1)
+        ccp_1 = ccp_1 / abs(ccp_1) if ccp_1 != 0 else 0
         uva_1 = unitize_mapping(rs.VectorAngle(self.adjacency[1].vec_sta, self.vec_sta), 0, 180)
         self.adjacency_state = [ccp_0 * uva_0 * magni_coef, ccp_1 * uva_1 * magni_coef]
 
@@ -232,7 +233,11 @@ class Segment:
                     # in this scenario the curve segment would be too short to operate 
                     vecs = [self.vec]
                     pts = [self.sta]
-
+        if not vecs:
+            # catch all short conditions
+            self.endtype = 0 
+            vecs = [self.vec]
+            pts = [self.sta]
         # gc
         if side_subsegs: rs.DeleteObjects(side_subsegs)
         rs.DeleteObject(main_subseg)
