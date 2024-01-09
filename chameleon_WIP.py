@@ -107,8 +107,8 @@ class Segment:
         self.endtype = 0
         self.alignment = 0
 
-        self.vecs, self.insrt_pts = self._insrt_find()
-        self.orients = [self._get_orient(i) for i in self.vecs]
+        self._insrt_find()
+        self.orients = [self._get_orient(i) for i in self.insrt_vecs]
 
     def activate(self):
         self.adjacency_stating()
@@ -178,50 +178,110 @@ class Segment:
     def _get_orient(self, vec):
         return rs.VectorAngle(vec, [1, 0, 0]) if rs.VectorCrossProduct(vec, [1, 0, 0])[2] < 0 else -rs.VectorAngle(vec, [1,0,0])
 
-    def _insrt_find(self):
-        """Find block insertion points for the segment."""
-        _rh_crv = rs.coercecurve(self.id)
+    def sort_smpl_blks(self):
+        if len(self.smpl_blks) == 0: raise IndexError("No sample blocks found!")
+        self.smpl_blks.sort(key = lambda i:i.ref_t)
+
+    def _remnant_length(self):
+        # get remnant length
+        self.rh_crv = rs.coercecurve(self.id)
         _ts = rs.DivideCurveEquidistant(self.id, module, False, False)
         try: 
-            _rem_crv = _rh_crv.Split(_ts[-1])[-1]
+            _rem_crv = self.rh_crv.Split(_ts[-1])[-1]
             self.remnant = _rem_crv.GetLength()
         except: 
             self.remnant = 0
-        
-        # consider the condition of having remnant
-        if module_tol / 2 < self.remnant < module:
-            t_left = _rh_crv.LengthParameter(self.remnant / 2)[1]
-            t_right =  _rh_crv.LengthParameter(self.length - self.remnant / 2)[1]
-            _temp_crvs = rs.SplitCurve(self.id, [t_left, t_right], False)
-            main_subseg = _temp_crvs[1]
-            side_subsegs = [_temp_crvs[0], _temp_crvs[2]]
-        else:
-            main_subseg = rs.CopyObject(self.id)
-            side_subsegs = []
 
-        pts = list(rs.DivideCurveEquidistant(main_subseg, module, False, True))
-        
-        vecs = get_sequential_vec(pts)
-        pts = pts[:-1]
-        if module_tol / 2 < self.remnant < module:
-            if self.endtype == 1:
-                sta_pts = [rs.CurveStartPoint(i) for i in side_subsegs]
-                end_pts = [rs.CurveEndPoint(i) for i in side_subsegs]
-                added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
-                vecs = [added_vecs[0]] + vecs + [added_vecs[1]]
-                pts = [sta_pts[0]] + pts + [sta_pts[1]]
+    def _break_seg_down(self):
+        # break the segment down to 1 to 3 sub-segments for inserting points
+        if self.alignment == 0:     # mid align
+            if self.endtype == 0:
+                t_left = self.rh_crv.LengthParameter((self.remnant / 2) + module)[1]
+                t_right =  self.rh_crv.LengthParameter(self.length - module - (self.remnant / 2))[1]
+            elif self.endtype == 1:
+                t_left = self.rh_crv.LengthParameter(self.remnant / 2)[1]
+                t_right =  self.rh_crv.LengthParameter(self.length - self.remnant / 2)[1]
+            if abs(t_left - t_right) > 0.01:
+                _temp_crvs = rs.SplitCurve(self.id, [t_left, t_right], False)
+                return _temp_crvs[1], [_temp_crvs[0], _temp_crvs[2]]
             else:
-                sta_pts = [self.sta, pts[-1]]
-                end_pts = [pts[1], self.end]
-                added_vecs = [rs.VectorCreate(end_pts[x], sta_pts[x]) for x in range(len(sta_pts))]
-                vecs = [added_vecs[0]] + vecs[1:-1] + [added_vecs[1]]
-                pts = [sta_pts[0]] + pts[1:-1] + [sta_pts[1]]
+                _temp_crvs = rs.SplitCurve(self.id, [t_left], False)
+                return None, [_temp_crvs[0], _temp_crvs[1]]
 
+        elif self.alignment == 1:   # right align
+            if self.endtype == 0:
+                t_left = self.rh_crv.LengthParameter(self.remnant + module)[1]
+            elif self.endtype == 1:
+                t_left = self.rh_crv.LengthParameter(self.remnant)[1]
+            t_right = self.domain[1]
+            _temp_crvs = rs.SplitCurve(self.id, [t_left, t_right], False)
+            return _temp_crvs[1], [_temp_crvs[0]]
+
+        else:                       # left align
+            if self.endtype == 0:
+                t_right = self.rh_crv.LengthParameter(self.length - self.remnant - module)[1]
+            elif self.endtype == 1:
+                t_right = self.rh_crv.LengthParameter(self.length - self.remnant)[1]
+            t_left = self.domain[0]
+            _temp_crvs = rs.SplitCurve(self.id, [t_left, t_right], False)
+            return _temp_crvs[0], [_temp_crvs[1]]
+
+    def _get_side_ptvec(self):
+        # get point/vec from the side sub-segments
+        side_pts = [rs.CurveStartPoint(i) for i in self.side_subsegs]
+        side_vecs = [rs.CurveTangent(i, rs.CurveDomain(i)[0]) for i in self.side_subsegs]
+        if self.alignment >= 0:
+            self.insrt_pts.insert(0, side_pts[0])
+            self.insrt_vecs.insert(0, side_vecs[0])
+        if self.alignment <= 0:
+            self.insrt_pts.append(side_pts[-1])
+            self.insrt_vecs.append(side_vecs[-1])
+
+    def _orphan_check(self):
+        if self.length < module * 2:
+            return True, [self.sta], [self.vec_sta]
+        return False, None, None
+
+    def _insrt_find(self):
+        """
+        Find block insertion points for the segment.
+        Controlling multiple private methods.
+        """
+        # get remnant length
+        self._remnant_length()
+
+        # run orphan check
+        state, pts, vecs = self._orphan_check()
+        if state:
+            self.insrt_pts, self.insrt_vecs = pts, vecs
+            return state
+
+        # if there's any remnant, run the segment breaking down tool
+        if self.remnant > 0: self.main_subseg, self.side_subsegs = self._break_seg_down()
+        else: self.main_subseg, self.side_subsegs = rs.CopyObject(self.id), None
+
+        # get point/vec for the middle portion of the segment
+        if self.main_subseg:
+            self.insrt_pts = list(rs.DivideCurveEquidistant(self.main_subseg, module, False, True))
+            self.insrt_vecs = get_sequential_vec(self.insrt_pts)
+            self.insrt_pts = self.insrt_pts[:-1]
+        else:
+            self.insrt_pts = []
+            self.insrt_vecs = []
+
+        # get point/vec for the side portion of the segment
+        if self.remnant > 0:
+            self._get_side_ptvec()
+        
+        if not self.insrt_vecs:
+            # catch all short conditions
+            raise IndexError("hmm... there's no insertion point, what happened?")
+        
         # gc
-        if side_subsegs: rs.DeleteObjects(side_subsegs)
-        rs.DeleteObject(main_subseg)
+        if self.side_subsegs: rs.DeleteObjects(self.side_subsegs)
+        if self.main_subseg: rs.DeleteObject(self.main_subseg)
 
-        return vecs, pts
+        return True
 
     def facade_populate(self):
         """populate different facade types based on the type property."""
@@ -239,21 +299,41 @@ class BlkRef:
     def __init__(self, id):
         self.id = id
         self.bb = rs.BoundingBox(id)
+        self.pos = rs.BlockInstanceInsertPoint(self.id)
+        self.xform = rs.BlockInstanceXform(self.id)
         self.cen = [(self.bb[6][0] + self.bb[0][0])/2, (self.bb[6][1] + self.bb[0][1])/2, (self.bb[6][2] + self.bb[0][2])/2]
-        self.name = rs.BlockInstanceName(id)
+        self.name = rs.BlockInstanceName(self.id)
         self.def_objs = rs.BlockObjects(self.name)
         self.def_bb = rs.BoundingBox(self.def_objs)
         self.thickness = self.def_bb[6][1] - self.def_bb[0][1]
-    
-    def distance_compare(self, pt):
+        self.scalex = self._get_scale()
+        self.angle = self._get_rotation()
+        self.angle_vec = rs.VectorRotate([1,0,0], self.angle, [0,0,1])
+        self.ref_t = 0
+        
+
+
+    def _get_rotation(self):
+    #    rotX = math.degrees(math.atan2(-xform.M21, xform.M22))
+    #    rotY = math.degrees(math.asin(xform.M20))
+        rotZ = m.degrees(m.atan2(self.xform.M10, self.xform.M00))
+        return rotZ
+
+    def project_distance_compare(self, pt):
         dist_3 = rs.VectorCreate(self.cen, pt)
         dist_2 = [dist_3[0], dist_3[1], 0]
         return rs.VectorLength(dist_2)
 
     def closest_point(self, crv):
-        t = rs.CurveClosestPoint(crv, self.cen)
-        pt = rs.EvaluateCurve(crv, t)
+        self.ref_t = rs.CurveClosestPoint(crv, self.cen)
+        pt = rs.EvaluateCurve(crv, self.ref_t)
         return pt
+
+    def _get_scale(self):
+        scaleX = rg.Vector3d(self.xform.M00, self.xform.M10, self.xform.M20).Length
+        # scaleY = rg.Vector3d(self.xform.M01, self.xform.M11, self.xform.M21).Length
+        # scaleZ = rg.Vector3d(self.xform.M02, self.xform.M12, self.xform.M22).Length
+        return scaleX
 
 
 # -------------------------------- GENERAL FUNCTIONS --------------------------------
@@ -295,49 +375,24 @@ def separate_input(input_params):
             crv = input_params.pop(x)
     return input_params, crv
 
-def blks_smpl_match_(blks, smpl_cls):
-    """match each segment with its block type"""
-    segs = list(smpl_cls.seg_cls)
-    random.shuffle(blks)
-    for i in blks:
-        bbb = rs.BoundingBox(i)
-        blk_cen = [(bbb[6][0] + bbb[0][0])/2, (bbb[6][1] + bbb[0][1])/2, (bbb[6][2] + bbb[0][2])/2]
-        target_distance = (bbb[6][1] - bbb[0][1]) / 2
-        if segs:
-            dist_list = []
-            for j in segs:
-                _t = rs.CurveClosestPoint(j.id, blk_cen)
-                _pt = rs.EvaluateCurve(j.id, _t)
-                _vec = rs.VectorCreate(_pt, blk_cen)
-                dist_list.append((_vec[0]**2 + _vec[1]**2)**0.5)
-            min_dis = min(dist_list)
-            if min_dis > target_distance + 0.02:
-                continue
-            _idx = dist_list.index(min_dis)
-            segs[_idx].blk_type = rs.BlockInstanceName(i)
-            segs.pop(_idx)
-        else: break
-
 def blks_smpl_match(blk_refs, smpl_cls):
     """match each segment with its block type"""
     blk_refs_cp = list(blk_refs)
     for i in smpl_cls.seg_cls:
         for j in blk_refs_cp:
             pt_oncrv = j.closest_point(i.id)
-            dist_2 = j.distance_compare(pt_oncrv)
-            if dist_2 < j.thickness
+            crv_vec = rs.CurveTangent(i.id, rs.CurveClosestPoint(i.id, pt_oncrv))
+            dist_2 = j.project_distance_compare(pt_oncrv)
+            if dist_2 < j.thickness and rs.VectorAngle(crv_vec, j.angle_vec) < 5:
+                i.smpl_blks.append(j)
+        [blk_refs_cp.remove(j) for j in i.smpl_blks]
+        i.sort_smpl_blks()
+        i.blk_type = i.smpl_blks[0].name
 
-            
-            
-
-
-
-
-
-
-
-
-    
+    for i in smpl_cls.seg_cls:
+        if abs(i.smpl_blks[0].scalex - 1) > 0.01: i.alignment += 1
+        if abs(i.smpl_blks[-1].scalex - 1) > 0.01: i.alignment -= 1
+        rs.AddTextDot(i.alignment, i.mid)
 
 def parse_input(geos):
     """parse the input geometries to curve only"""
