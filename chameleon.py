@@ -6,6 +6,9 @@ import math as m
 """
 Chameleon (WIP)
 
+v 0.2.6-alpha   Fine-tuned the pattern recognition algorithm. 
+v 0.2.5-alpha   Fixed bugs that making end panel working incorrectly.
+v 0.2.4-alpha   Added new feature of transfering alignment style from sample to input.
 v 0.2.3-alpha   Added new feature of alignment recognition for each segment input.
 v 0.2.2-alpha   Enabled block separating transformation matrix.
 v 0.2.1-alpha   Added a new class for each block reference instance. 
@@ -81,11 +84,14 @@ class Footprint:
     
     def display_labels(self):
         for i in self.seg_cls:
-            rs.AddTextDot("Type {}".format(i.label), i.mid)
-            # rs.AddLine([0,0,0], i.ml_loc+[0])
+            rs.AddTextDot(i.label, i.mid)
     
+    def display_alignment(self):
+        [rs.AddTextDot(i.alignment, i.mid) for i in self.seg_cls]
+
     def deploy_facade(self):
         for i in self.seg_cls:
+            i.insrt_find()
             i.facade_populate()
 
 class Segment:
@@ -111,16 +117,14 @@ class Segment:
         self.blk_type = None
         self.endtype = 0
         self.alignment = 0
-
-        self._insrt_find()
-        self.orients = [self._get_orient(i) for i in self.insrt_vecs]
+        self.label = 0
 
     def activate(self):
         self.adjacency_stating()
         self.adjacency_scoring()
         self.length_scoring()
         self.vector_scoring()
-        self.location_scoring()
+        self.clock_scoring()
         self.curvature_scoring()
         self.vectorize()
 
@@ -128,10 +132,10 @@ class Segment:
         """Check the status of adjacency, -1 means clockwise, 1 means counter clockwise"""
         if len(self.adjacency) < 2: raise IndexError("self.adjacency doesn't have enough members")
         ccp_0 = rs.VectorCrossProduct(self.vec_sta, self.adjacency[0].vec)[2]
-        ccp_0 /= abs(ccp_0)
+        ccp_0 = ccp_0 / abs(ccp_0) if ccp_0 != 0 else 0
         uva_0 = unitize_mapping(rs.VectorAngle(self.adjacency[0].vec_sta, self.vec_sta), 0, 180)
         ccp_1 = rs.VectorCrossProduct(self.adjacency[1].vec_sta, self.vec_sta)[2]
-        ccp_1 /= abs(ccp_1)
+        ccp_1 = ccp_1 / abs(ccp_1) if ccp_1 != 0 else 0
         uva_1 = unitize_mapping(rs.VectorAngle(self.adjacency[1].vec_sta, self.vec_sta), 0, 180)
         self.adjacency_state = [ccp_0 * uva_0 * magni_coef, ccp_1 * uva_1 * magni_coef]
 
@@ -145,11 +149,13 @@ class Segment:
         ang = abs(rs.VectorAngle([0,1,0], self.vec) - 90)
         self.vector_score = unitize_mapping(ang, 0, 90)
 
-    def location_scoring(self):
+    def clock_scoring(self):
         """Score different locations for the segment."""
         _vec = rs.VectorCreate(self.mid, self.fpt.cen)
-        ang = rs.VectorAngle([0,1,0], _vec)
-        self.location_score = unitize_mapping(ang, 0, 180)
+        ccp = rs.VectorCrossProduct(_vec, [0,1,0])[2]
+        ccp = ccp / abs(ccp) if ccp != 0 else 0
+        ang = rs.VectorAngle([0,1,0], _vec) * ccp
+        self.clock_score = unitize_mapping(ang, -180, 180)
 
     def curvature_scoring(self):
         """Score the curvature for the segment"""
@@ -161,8 +167,8 @@ class Segment:
 
     def vectorize(self):
         """put in feature matrix with weigh"""          # --------------- weigh ---------------
-#        self.ml_loc = [self.length_score * 0.5, self.adjacency_score * 5, self.vector_score * 1.25, self.location_score * 0.75]
-        self.ml_loc = [self.length_score * 0.66, self.adjacency_score * 2, self.vector_score * 0.75, self.curvature_score * 2]
+        self.ml_loc = [self.length_score * 0.5, self.adjacency_score * 5, self.vector_score * 1.25, self.clock_score * 0.75]
+        # self.ml_loc = [self.length_score * 0.66, self.adjacency_score * 2, self.curvature_score * 2]
 
     def vector_compare(self, other, typed = 0):
         """compare the distance of two vectors"""
@@ -178,7 +184,7 @@ class Segment:
         return distance
 
     def display_score(self):
-        rs.AddTextDot("{}\n{}\n{}\n{}".format(self.length_score, self.adjacency_score, self.vector_score, self.location_score), self.mid)
+        rs.AddTextDot("{}\n{}\n{}\n{}".format(self.length_score, self.adjacency_score, self.vector_score, self.clock_score), self.mid)
 
     def _get_orient(self, vec):
         return rs.VectorAngle(vec, [1, 0, 0]) if rs.VectorCrossProduct(vec, [1, 0, 0])[2] < 0 else -rs.VectorAngle(vec, [1,0,0])
@@ -236,18 +242,18 @@ class Segment:
         side_pts = [rs.CurveStartPoint(i) for i in self.side_subsegs]
         side_vecs = [rs.CurveTangent(i, rs.CurveDomain(i)[0]) for i in self.side_subsegs]
         if self.alignment >= 0:
-            self.insrt_pts.insert(0, side_pts[0])
-            self.insrt_vecs.insert(0, side_vecs[0])
+            self.side_insrt_pts[0] = side_pts[0]
+            self.side_insrt_vecs[0] = side_vecs[0]
         if self.alignment <= 0:
-            self.insrt_pts.append(side_pts[-1])
-            self.insrt_vecs.append(side_vecs[-1])
+            self.side_insrt_pts[1] = side_pts[-1]
+            self.side_insrt_vecs[1] = side_vecs[-1]
 
     def _orphan_check(self):
         if self.length < module * 2:
             return True, [self.sta], [self.vec_sta]
         return False, None, None
 
-    def _insrt_find(self):
+    def insrt_find(self):
         """
         Find block insertion points for the segment.
         Controlling multiple private methods.
@@ -258,7 +264,7 @@ class Segment:
         # run orphan check
         state, pts, vecs = self._orphan_check()
         if state:
-            self.insrt_pts, self.insrt_vecs = pts, vecs
+            self.mid_insrt_pts, self.mid_insrt_vecs = pts, vecs
             return state
 
         # if there's any remnant, run the segment breaking down tool
@@ -267,21 +273,29 @@ class Segment:
 
         # get point/vec for the middle portion of the segment
         if self.main_subseg:
-            self.insrt_pts = list(rs.DivideCurveEquidistant(self.main_subseg, module, False, True))
-            self.insrt_vecs = get_sequential_vec(self.insrt_pts)
-            self.insrt_pts = self.insrt_pts[:-1]
+            self.mid_insrt_pts = list(rs.DivideCurveEquidistant(self.main_subseg, module, False, True))
+            self.mid_insrt_vecs = get_sequential_vec(self.mid_insrt_pts)
+            self.mid_insrt_pts = self.mid_insrt_pts[:-1]
         else:
-            self.insrt_pts = []
-            self.insrt_vecs = []
+            self.mid_insrt_pts = []
+            self.mid_insrt_vecs = []
+
+        # initialize sides
+        self.side_insrt_pts = [None, None]
+        self.side_insrt_vecs = [None, None]
 
         # get point/vec for the side portion of the segment
         if self.remnant > 0:
             self._get_side_ptvec()
         
-        if not self.insrt_vecs:
+        if not self.mid_insrt_vecs and not self.side_insrt_vecs:
             # catch all short conditions
             raise IndexError("hmm... there's no insertion point, what happened?")
-        
+
+        # get all orientation for block slots
+        self.mid_orients = [self._get_orient(i) for i in self.mid_insrt_vecs]
+        self.side_orients = [self._get_orient(i) if i else None for i in self.side_insrt_vecs]
+
         # gc
         if self.side_subsegs: rs.DeleteObjects(self.side_subsegs)
         if self.main_subseg: rs.DeleteObject(self.main_subseg)
@@ -291,14 +305,26 @@ class Segment:
     def facade_populate(self):
         """populate different facade types based on the type property."""
         g = rs.AddGroup()
-        _blks = [rs.InsertBlock(self.blk_type, self.insrt_pts[x], (1,1,1)) for x in range(len(self.insrt_pts))]
-        rs.AddObjectsToGroup(_blks, g)
-        if self.remnant > module_tol / 2:
-            scaling = ((self.remnant/2) + module)/module if self.endtype == 0 else (self.remnant/2)/module
-            rs.ScaleObject(_blks[0], self.insrt_pts[0], [scaling, 1, 1])
-            rs.ScaleObject(_blks[-1], self.insrt_pts[-1], [scaling, 1, 1])
-        [rs.RotateObject(_blks[x], self.insrt_pts[x], self.orients[x]) for x in range(len(_blks))]
-
+        _mid_blks = [rs.InsertBlock(self.blk_type, self.mid_insrt_pts[x], (1,1,1)) for x in range(len(self.mid_insrt_pts))]
+        rs.AddObjectsToGroup(_mid_blks, g)
+        _side_blks = [rs.InsertBlock(self.blk_type, self.side_insrt_pts[x], (1,1,1)) if self.side_insrt_pts[x] else None for x in range(len(self.side_insrt_pts))]
+        
+        # sides
+        if _side_blks[0] == _side_blks[1]:
+            pass
+        elif _side_blks[0] == None:
+            scaling = self.remnant / module if self.endtype == 1 else (self.remnant + module) / module
+            rs.ScaleObject(_side_blks[1], self.side_insrt_pts[1], [scaling, 1, 1])
+        elif _side_blks[1] == None:
+            scaling = self.remnant / module if self.endtype == 1 else (self.remnant + module) / module
+            rs.ScaleObject(_side_blks[0], self.side_insrt_pts[0], [scaling, 1, 1])
+        else:
+            scaling = (self.remnant / 2) / module if self.endtype == 1 else ((self.remnant / 2) + module) / module
+            [rs.ScaleObject(_side_blks[x], self.side_insrt_pts[x], [scaling, 1, 1]) for x in range(len(_side_blks))]
+        
+        [rs.RotateObject(_mid_blks[x], self.mid_insrt_pts[x], self.mid_orients[x]) for x in range(len(_mid_blks))]
+        [rs.RotateObject(_side_blks[x], self.side_insrt_pts[x], self.side_orients[x]) for x in range(len(_side_blks)) if _side_blks[x]]
+        
 class BlkRef:
 
     def __init__(self, id):
@@ -382,6 +408,7 @@ def separate_input(input_params):
 
 def blks_smpl_match(blk_refs, smpl_cls):
     """match each segment with its block type"""
+    count = 0
     blk_refs_cp = list(blk_refs)
     for i in smpl_cls.seg_cls:
         for j in blk_refs_cp:
@@ -393,10 +420,13 @@ def blks_smpl_match(blk_refs, smpl_cls):
         [blk_refs_cp.remove(j) for j in i.smpl_blks]
         i.sort_smpl_blks()
         i.blk_type = i.smpl_blks[0].name
+        i.label = count
+        count += 1
 
     for i in smpl_cls.seg_cls:
         if abs(i.smpl_blks[0].scalex - 1) > 0.01: i.alignment += 1
         if abs(i.smpl_blks[-1].scalex - 1) > 0.01: i.alignment -= 1
+    
 
 def parse_input(geos):
     """parse the input geometries to curve only"""
@@ -448,13 +478,18 @@ smpl_cls.softmax_adjacency()
 # match types
 for ipt_cls in ipt_clss:
     for i in ipt_cls.seg_cls:
-        _ = [i.vector_compare(j) for j in smpl_cls.seg_cls]
+        _ = [i.vector_compare(j, 2) for j in smpl_cls.seg_cls]
         dic = dict(zip(_, smpl_cls.seg_cls))
-        i.blk_type = dic[min(_)].blk_type
+        # _seg_cls = list(smpl_cls.seg_cls)
+        min_smpl_seg = dic[min(_)]
+        i.blk_type = min_smpl_seg.blk_type
+        i.alignment = min_smpl_seg.alignment
+        i.label = min_smpl_seg.label
+
 
 [ipt_cls.deploy_facade() for ipt_cls in ipt_clss]
-# [[j.display_score() for j in i.seg_cls] for i in ipt_clss]
-# [i.display_score() for i in smpl_cls.seg_cls]
+# [i.display_labels() for i in ipt_clss]
+# smpl_cls.display_labels()
 
 
 # -------------------------------- GC --------------------------------
